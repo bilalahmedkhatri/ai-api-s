@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    name: Lint & Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies (prod + dev)
+        run: uv sync --all-groups
+
+      # ── Lint ──────────────────────────────────────────────────────────────────
+      - name: Ruff — lint check
+        run: uv run ruff check app/ tests/
+
+      - name: Ruff — format check
+        run: uv run ruff format --check app/ tests/
+
+      # ── Tests ─────────────────────────────────────────────────────────────────
+      - name: Run test suite
+        env:
+          # Provide dummy values so Settings initialises without real keys.
+          # No live API calls are made in the unit tests.
+          OPENAI_API_KEY: "test-key"
+          GROQ_API_KEY: "test-key"
+          COHERE_API_KEY: "test-key"
+          TAVILY_API_KEY: ""
+          BRAVE_API_KEY: ""
+          UPSTASH_REDIS_REST_URL: ""
+          UPSTASH_REDIS_REST_TOKEN: ""
+          SENTRY_DSN: ""
+        run: uv run pytest tests/ -v --tb=short
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-results-${{ matrix.python-version }}
+          path: .pytest_cache/
+          retention-days: 7
