@@ -15,14 +15,14 @@ if [ -n "$LITESTREAM_ACCESS_KEY_ID" ] && [ -n "$LITESTREAM_S3_BUCKET" ]; then
         -- \
         uvicorn main:app \
             --host 0.0.0.0 \
-            --port 8000 \
+            --port "${PORT:-8000}" \
             --workers "${WORKERS:-1}" \
             --log-level warning
 else
     echo "Litestream not configured — starting Uvicorn directly."
     exec uvicorn main:app \
         --host 0.0.0.0 \
-        --port 8000 \
+        --port "${PORT:-8000}" \
         --workers "${WORKERS:-1}" \
         --log-level warning
 fi
