@@ -18,23 +18,20 @@ class Settings(BaseSettings):
     debug: bool = False
     max_results: int = 10
 
-    # Database
-    database_url: str = Field(default="postgresql+asyncpg://postgres:postgres@localhost:5432/gateway")
+    # Database URL read directly from environment / .env file
+    database_url: str = Field(default="")
 
     @field_validator("database_url", mode="before")
     @classmethod
     def normalize_db_url(cls, v: str | None) -> str:
-        default_url = "postgresql+asyncpg://postgres:postgres@localhost:5432/gateway"
         if not v or not isinstance(v, str) or not v.strip():
-            env_url = os.environ.get("DATABASE_URL")
-            if env_url and env_url.strip():
-                v = env_url.strip()
-            else:
-                return default_url
+            v = os.environ.get("DATABASE_URL", "")
 
         v = v.strip().strip("'\"")
         if not v:
-            return default_url
+            raise ValueError(
+                "DATABASE_URL environment variable is missing or empty. Please specify a valid DATABASE_URL in your environment or .env file."
+            )
 
         if v.startswith("postgres://"):
             v = v.replace("postgres://", "postgresql+asyncpg://", 1)
