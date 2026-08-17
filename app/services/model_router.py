@@ -31,8 +31,9 @@ logger = logging.getLogger(__name__)
 _QWEN_72B           = "groq/qwen-2.5-coder-32b"          # math + code primary
 _LLAMA_70B          = "groq/llama-3.3-70b-versatile"     # reasoning + creative primary
 _COMMAND_R          = "cohere/command-r-plus"             # RAG primary
-_OPENROUTER_FALLBACK = "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
+_OPENROUTER_FALLBACK = "openrouter/meta-llama/llama-3.3-70b-instruct:free"
 _LLAMA_8B           = "groq/llama-3.1-8b-instant"        # cheap fast fallback
+_GPT4O_MINI         = "gpt-4o-mini"                      # ultimate reliable fallback
 
 _PRIMARY_VISION = "gemini/gemini-flash-latest"
 _VISION_FALLBACKS = [
@@ -44,17 +45,17 @@ _VISION_FALLBACKS = [
 # key: intent_category (from semantic_router.py)
 # value: (primary_model, [fallback_models])
 ROUTING_MATRIX: dict[str, tuple[str, list[str]]] = {
-    "coding":           (_QWEN_72B,      [_LLAMA_70B, _LLAMA_8B]),
-    "mathematics":      (_QWEN_72B,      [_LLAMA_70B, _LLAMA_8B]),
-    "creative_writing": (_LLAMA_70B,     [_LLAMA_8B, _COMMAND_R]),
-    "general_knowledge":(_LLAMA_70B,     [_COMMAND_R, _LLAMA_8B]),
-    "general":          (_LLAMA_70B,     [_LLAMA_8B, _OPENROUTER_FALLBACK]),
+    "coding":           (_QWEN_72B,      [_LLAMA_70B, _LLAMA_8B, _GPT4O_MINI]),
+    "mathematics":      (_QWEN_72B,      [_LLAMA_70B, _LLAMA_8B, _GPT4O_MINI]),
+    "creative_writing": (_LLAMA_70B,     [_LLAMA_8B, _COMMAND_R, _GPT4O_MINI]),
+    "general_knowledge":(_LLAMA_70B,     [_COMMAND_R, _LLAMA_8B, _GPT4O_MINI]),
+    "general":          (_LLAMA_70B,     [_LLAMA_8B, _OPENROUTER_FALLBACK, _GPT4O_MINI]),
     # Rule-engine categories that still need LLM
-    "math_task":        (_QWEN_72B,      [_LLAMA_70B]),
-    "math_expression":  (_QWEN_72B,      [_LLAMA_70B]),
+    "math_task":        (_QWEN_72B,      [_LLAMA_70B, _GPT4O_MINI]),
+    "math_expression":  (_QWEN_72B,      [_LLAMA_70B, _GPT4O_MINI]),
 }
 _DEFAULT_PRIMARY  = _LLAMA_70B
-_DEFAULT_FALLBACKS = [_LLAMA_8B, _OPENROUTER_FALLBACK]
+_DEFAULT_FALLBACKS = [_LLAMA_8B, _OPENROUTER_FALLBACK, _GPT4O_MINI]
 
 LLM_TIMEOUT = 15  # seconds — hard deadline before fallback triggers
 

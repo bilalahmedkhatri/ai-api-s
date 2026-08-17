@@ -182,14 +182,15 @@ async def process_query(
     )
 
     # ── 8. Write to Upstash cache ──────────────────────────────────────────────
-    ttl = _cache_ttl(routing.intent_category)
-    payload = {
-        "answer": answer,
-        "intent": routing.intent_category,
-        "model_used": routing.model_used,
-        "sources": [s.model_dump() for s in sources],
-    }
-    await cache.set(cache_key, payload, ttl=ttl)
+    if not answer.startswith("[LLM error:"):
+        ttl = _cache_ttl(routing.intent_category)
+        payload = {
+            "answer": answer,
+            "intent": routing.intent_category,
+            "model_used": routing.model_used,
+            "sources": [s.model_dump() for s in sources],
+        }
+        await cache.set(cache_key, payload, ttl=ttl)
 
     logger.info(
         "Query processed",
