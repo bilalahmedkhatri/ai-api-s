@@ -3,8 +3,8 @@
 import datetime
 import json
 
-from sqlalchemy import DateTime, Float, Integer, String, Text, func
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
@@ -72,3 +72,44 @@ class FinalResponse(Base):
     @meta.setter
     def meta(self, value: dict) -> None:
         self.meta_fields = json.dumps(value)
+
+
+class AIModel(Base):
+    """Registered AI models and pricing metadata."""
+
+    __tablename__ = "ai_models"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_free: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    prompt_price_per_1k: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    completion_price_per_1k: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ModelWebsiteUsage(Base):
+    """Aggregated daily usage metrics per AI model and website origin."""
+
+    __tablename__ = "model_website_usages"
+    __table_args__ = (
+        UniqueConstraint("model_id", "website_origin", "usage_date", name="uq_model_website_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    model_id: Mapped[int] = mapped_column(Integer, ForeignKey("ai_models.id", ondelete="CASCADE"), nullable=False, index=True)
+    website_origin: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    usage_date: Mapped[datetime.date] = mapped_column(Date, nullable=False, index=True)
+    total_requests: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_cost_usd: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    last_updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    model: Mapped["AIModel"] = relationship("AIModel")

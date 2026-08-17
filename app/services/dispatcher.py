@@ -30,6 +30,7 @@ from app.services.model_router import call_llm
 from app.services.rule_engine import run_rule_engine
 from app.services.search_aggregator import search
 from app.services.semantic_router import classify
+from app.services.usage_tracker import record_model_usage
 
 logger = logging.getLogger(__name__)
 
@@ -232,3 +233,17 @@ async def _persist_final(
     )
     db.add(row)
     await db.commit()
+
+    if model and model not in ("rule", "sqlite_cache") and (prompt_tokens or completion_tokens):
+        try:
+            await record_model_usage(
+                db,
+                model_name=model,
+                website_origin="ai-gateway-api",
+                prompt_tokens=prompt_tokens or 0,
+                completion_tokens=completion_tokens or 0,
+                provider="groq" if "groq" in model.lower() else "openai",
+                is_free=True if "groq" in model.lower() or "free" in model.lower() else False,
+            )
+        except Exception as exc:
+            logger.warning("Failed to record model token usage: %s", exc)
