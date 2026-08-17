@@ -16,7 +16,10 @@ async def sync_models_endpoint(
     dry_run: bool = Query(default=False, description="Preview without writing to DB"),
     max_paid: int = Query(default=50, description="Max lowest-cost paid models to include"),
     authorization: str | None = Header(default=None),
+    upstash_authorization: str | None = Header(default=None, alias="Upstash-Forward-Authorization"),
     x_cron_secret: str | None = Header(default=None, alias="X-Cron-Secret"),
+    upstash_x_cron_secret: str | None = Header(default=None, alias="Upstash-Forward-X-Cron-Secret"),
+    cron_secret_header: str | None = Header(default=None, alias="Cron-Secret"),
 ):
     """
     HTTP trigger for Upstash QStash / external cron services.
@@ -25,10 +28,17 @@ async def sync_models_endpoint(
     """
     if settings.cron_secret:
         token = None
-        if authorization and authorization.startswith("Bearer "):
-            token = authorization.split("Bearer ", 1)[1].strip()
+        auth_val = authorization or upstash_authorization
+        if auth_val and auth_val.startswith("Bearer "):
+            token = auth_val.split("Bearer ", 1)[1].strip()
+        elif auth_val:
+            token = auth_val.strip()
         elif x_cron_secret:
             token = x_cron_secret.strip()
+        elif upstash_x_cron_secret:
+            token = upstash_x_cron_secret.strip()
+        elif cron_secret_header:
+            token = cron_secret_header.strip()
 
         if token != settings.cron_secret:
             logger.warning("Unauthorized cron trigger attempt from HTTP client")
