@@ -53,9 +53,6 @@ def parse_and_sort_models(raw_models: list[dict], max_paid: int = 50) -> tuple[l
         is_free = (prompt_per_1k == 0.0 and completion_per_1k == 0.0)
 
         provider = "openrouter"
-        if "/" in model_id:
-            provider = model_id.split("/")[0]
-
         name = f"openrouter/{model_id}" if not model_id.startswith("openrouter/") else model_id
 
         entry = {
