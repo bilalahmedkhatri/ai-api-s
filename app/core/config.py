@@ -95,8 +95,8 @@ class Settings(BaseSettings):
     cohere_api_key: str | None = os.environ.get("COHERE_API_KEY") 
     openai_api_key: str | None = os.environ.get("OPENAI_API_KEY") 
 
-    # Observability
-    sentry_dsn: str | None = os.environ.get("SENTRY_DSN")  # set in .env to enable Sentry error tracking
+    # Cron security token — set CRON_SECRET in .env to secure trigger endpoints
+    cron_secret: str | None = os.environ.get("CRON_SECRET")
 
 
 settings = Settings()
