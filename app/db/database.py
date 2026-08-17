@@ -5,10 +5,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.core.config import settings
 
+from sqlalchemy.pool import NullPool
+
 # PostgreSQL Async engine
 engine = create_async_engine(
     settings.database_url,
     echo=settings.debug,
+    poolclass=NullPool,
 )
 
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)

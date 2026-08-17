@@ -41,12 +41,12 @@ class HealthResponse(BaseModel):
 async def _check_db(db: AsyncSession) -> ComponentHealth:
     t0 = time.monotonic()
     try:
-        result = await db.execute(text("PRAGMA journal_mode"))
-        mode = result.scalar()
+        result = await db.execute(text("SELECT 1"))
+        val = result.scalar()
         return ComponentHealth(
             status="ok",
             latency_ms=round((time.monotonic() - t0) * 1000, 1),
-            detail=f"journal_mode={mode}",
+            detail=f"select_1={val}",
         )
     except Exception as exc:
         logger.error("Health: DB check failed: %s", exc)

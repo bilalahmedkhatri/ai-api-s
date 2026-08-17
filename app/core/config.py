@@ -8,6 +8,9 @@ import os
 load_dotenv()
 
 
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -21,10 +24,31 @@ class Settings(BaseSettings):
     @field_validator("database_url", mode="before")
     @classmethod
     def normalize_db_url(cls, v: str) -> str:
+        if not isinstance(v, str):
+            return v
         if v.startswith("postgres://"):
             v = v.replace("postgres://", "postgresql+asyncpg://", 1)
         elif v.startswith("postgresql://"):
             v = v.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+        if "?" in v:
+            parsed = urlparse(v)
+            query_params = parse_qs(parsed.query)
+
+            # 1. Convert sslmode to ssl for asyncpg compatibility
+            if "sslmode" in query_params:
+                sslmode_val = query_params.pop("sslmode")[0]
+                if sslmode_val in ("require", "verify-ca", "verify-full", "prefer", "allow"):
+                    query_params["ssl"] = [sslmode_val]
+
+            # 2. Remove libpq/MySQL parameters that asyncpg does not accept as keyword args
+            unsupported_params = ["channel_binding", "target_session_attrs", "gssencmode", "krbsrvname", "charset"]
+            for p in unsupported_params:
+                query_params.pop(p, None)
+
+            new_query = urlencode(query_params, doseq=True)
+            v = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment))
+
         return v
 
     # CORS — comma-separated origins in .env: ALLOWED_ORIGINS=http://localhost:3000,...
