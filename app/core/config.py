@@ -19,13 +19,23 @@ class Settings(BaseSettings):
     max_results: int = 10
 
     # Database
-    database_url: str = os.environ.get("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/gateway")
+    database_url: str = Field(default="postgresql+asyncpg://postgres:postgres@localhost:5432/gateway")
 
     @field_validator("database_url", mode="before")
     @classmethod
-    def normalize_db_url(cls, v: str) -> str:
-        if not isinstance(v, str):
-            return v
+    def normalize_db_url(cls, v: str | None) -> str:
+        default_url = "postgresql+asyncpg://postgres:postgres@localhost:5432/gateway"
+        if not v or not isinstance(v, str) or not v.strip():
+            env_url = os.environ.get("DATABASE_URL")
+            if env_url and env_url.strip():
+                v = env_url.strip()
+            else:
+                return default_url
+
+        v = v.strip().strip("'\"")
+        if not v:
+            return default_url
+
         if v.startswith("postgres://"):
             v = v.replace("postgres://", "postgresql+asyncpg://", 1)
         elif v.startswith("postgresql://"):
