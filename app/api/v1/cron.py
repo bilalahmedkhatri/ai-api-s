@@ -20,6 +20,7 @@ async def sync_models_endpoint(
     x_cron_secret: str | None = Header(default=None, alias="X-Cron-Secret"),
     upstash_x_cron_secret: str | None = Header(default=None, alias="Upstash-Forward-X-Cron-Secret"),
     cron_secret_header: str | None = Header(default=None, alias="Cron-Secret"),
+    cron_secret_env_header: str | None = Header(default=None, alias="CRON_SECRET"),
 ):
     """
     HTTP trigger for Upstash QStash / external cron services.
@@ -39,6 +40,8 @@ async def sync_models_endpoint(
             token = upstash_x_cron_secret.strip()
         elif cron_secret_header:
             token = cron_secret_header.strip()
+        elif cron_secret_env_header:
+            token = cron_secret_env_header.strip()
 
         if token != settings.cron_secret:
             logger.warning("Unauthorized cron trigger attempt from HTTP client")
