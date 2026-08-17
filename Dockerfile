@@ -20,14 +20,10 @@ RUN uv pip install --system --no-cache -r pyproject.toml
 # ─────────────────────────────────────────────────────────────────────────────
 FROM python:3.12-slim AS runtime
 
-# Install Litestream (SQLite → S3 streaming replication) and ffmpeg (video ingest)
-# Both are lightweight system binaries — no Python dep added.
+# Install system dependencies (ffmpeg is needed for video ingest)
 RUN apt-get update -qq && apt-get install -y --no-install-recommends \
-        wget ca-certificates ffmpeg \
-    && wget -qO /tmp/litestream.deb \
-        https://github.com/benbjohnson/litestream/releases/download/v0.3.13/litestream-v0.3.13-linux-amd64.deb \
-    && dpkg -i /tmp/litestream.deb \
-    && rm -rf /tmp/litestream.deb /var/lib/apt/lists/*
+        ca-certificates ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy installed Python packages from builder
 COPY --from=builder /usr/local/lib/python3.12 /usr/local/lib/python3.12
@@ -39,19 +35,15 @@ WORKDIR /app
 COPY . .
 
 # Create directories required at runtime
-RUN mkdir -p /app/logs /app/data
-
-# SQLite database lives on a mounted persistent volume at /app/data/
-ENV DATABASE_URL="sqlite+aiosqlite:////app/data/gateway.db"
+RUN mkdir -p /app/logs
 
 # Expose ASGI port
 EXPOSE 8000
 
-# Worker count: 1 for SQLite (aiosqlite is not fork-safe).
-# Override with WORKERS env var when switching to PostgreSQL.
+# Worker count (override in production via WORKERS env var if needed)
 ENV WORKERS=1
 
-# Litestream + Uvicorn entrypoint — see entrypoint.sh
+# Uvicorn entrypoint — see entrypoint.sh
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

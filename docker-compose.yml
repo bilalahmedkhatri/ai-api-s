@@ -1,4 +1,16 @@
 services:
+  db:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: gateway
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
   gateway:
     build:
       context: .
@@ -6,16 +18,15 @@ services:
     image: ai-gateway:local
     ports:
       - "8000:8000"
+    depends_on:
+      - db
     volumes:
-      # SQLite database on a named volume — survives container restarts.
-      # WAL mode works correctly on Linux ext4/xfs filesystems in Docker.
-      - gateway_data:/app/data
       # Logs available on host for tail/grep during development.
       - ./logs:/app/logs
     environment:
       # These values are read by app/core/config.py via Pydantic BaseSettings.
       # Override with a real .env file or Docker secrets in production.
-      DATABASE_URL: "sqlite+aiosqlite:////app/data/gateway.db"
+      DATABASE_URL: "postgresql+asyncpg://postgres:postgres@db:5432/gateway"
       DEBUG: "false"
       WORKERS: "1"
       # Populate these from your shell environment or a .env file:
@@ -35,5 +46,5 @@ services:
       start_period: 15s
 
 volumes:
-  gateway_data:
+  postgres_data:
     driver: local

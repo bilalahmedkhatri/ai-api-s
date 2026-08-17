@@ -16,8 +16,25 @@ jobs:
       matrix:
         python-version: ["3.12"]
 
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: gateway
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - name: Checkout repository
+      # -- (intermediate steps omitted for match but kept by tool)
+
         uses: actions/checkout@v4
 
       - name: Install uv
@@ -52,6 +69,7 @@ jobs:
           UPSTASH_REDIS_REST_URL: ""
           UPSTASH_REDIS_REST_TOKEN: ""
           SENTRY_DSN: ""
+          DATABASE_URL: "postgresql+asyncpg://postgres:postgres@localhost:5432/gateway"
         run: uv run pytest tests/ -v --tb=short
 
       - name: Upload test results

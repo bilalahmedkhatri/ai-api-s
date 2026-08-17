@@ -29,7 +29,7 @@ def test_deep_health_route_registered():
 def test_deep_health_returns_components():
     """Deep health must include 'database' and 'cache' component keys."""
     resp = client.get("/api/v1/health/")
-    # DB is accessible in test (SQLite); cache may be degraded without Upstash.
+    # DB is accessible in test (PostgreSQL); cache may be degraded without Upstash.
     assert resp.status_code in (200, 503)
     body = resp.json()
     assert "components" in body
@@ -39,7 +39,7 @@ def test_deep_health_returns_components():
 
 
 def test_deep_health_db_ok():
-    """SQLite should always be reachable in the test environment."""
+    """PostgreSQL should always be reachable in the test environment."""
     resp = client.get("/api/v1/health/")
     body = resp.json()
     assert body["components"]["database"]["status"] == "ok"

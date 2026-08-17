@@ -16,7 +16,16 @@ class Settings(BaseSettings):
     max_results: int = 10
 
     # Database
-    database_url: str = os.environ.get("DATABASE_URL", "sqlite+aiosqlite:///./gateway.db")
+    database_url: str = os.environ.get("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/gateway")
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def normalize_db_url(cls, v: str) -> str:
+        if v.startswith("postgres://"):
+            v = v.replace("postgres://", "postgresql+asyncpg://", 1)
+        elif v.startswith("postgresql://"):
+            v = v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return v
 
     # CORS — comma-separated origins in .env: ALLOWED_ORIGINS=http://localhost:3000,...
     allowed_origins: str | list[str] = Field(default=["http://localhost:3000", "http://localhost:8080"])
@@ -33,7 +42,7 @@ class Settings(BaseSettings):
     # Uvicorn
     host: str = "0.0.0.0"
     port: int = 8000
-    workers: int = 1  # aiosqlite is not fork-safe; keep 1 worker for SQLite
+    workers: int = 1
 
     # Models — override in .env
     embedding_model: str = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-small")   # any litellm embedding model
