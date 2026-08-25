@@ -113,3 +113,23 @@ class ModelWebsiteUsage(Base):
     )
 
     model: Mapped["AIModel"] = relationship("AIModel")
+
+
+class AccessAPIKey(Base):
+    """Third-party application API authentication key."""
+
+    __tablename__ = "access_apikey"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    client_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    allowed_domain: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    key_prefix: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    hashed_key: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_used_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+

@@ -98,5 +98,8 @@ class Settings(BaseSettings):
     # Cron security token — set CRON_SECRET in .env to secure trigger endpoints
     cron_secret: str | None = os.environ.get("CRON_SECRET")
 
+    # API Key requirement toggle for gateway query endpoints (default False)
+    require_api_key_for_query: bool = os.environ.get("REQUIRE_API_KEY_FOR_QUERY", "false").lower() in ("true", "1", "yes")
+
 
 settings = Settings()
