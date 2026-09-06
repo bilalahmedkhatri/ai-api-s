@@ -16,7 +16,7 @@ from pathlib import Path
 # Add project root directory to python path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.db.database import AsyncSessionLocal, init_db
+from app.db.database import AsyncSessionLocal, engine, init_db
 from app.services.api_key_service import generate_api_key, list_api_keys, revoke_api_key
 
 logging.basicConfig(
@@ -27,49 +27,58 @@ logger = logging.getLogger(__name__)
 
 
 async def run_create(client_name: str, allowed_domain: str | None):
-    await init_db()
-    async with AsyncSessionLocal() as db:
-        raw_key, record = await generate_api_key(
-            db=db, client_name=client_name, allowed_domain=allowed_domain
-        )
-        print("\n=======================================================")
-        print("         AccessAPIKey Created Successfully             ")
-        print("=======================================================")
-        print(f"  ID:             {record.id}")
-        print(f"  Client Name:    {record.client_name}")
-        print(f"  Allowed Domain: {record.allowed_domain or 'Any (*)'}")
-        print(f"  Key Prefix:     {record.key_prefix}")
-        print("-------------------------------------------------------")
-        print(f"  RAW SECRET KEY: {raw_key}")
-        print("  (STORE THIS KEY SECURELY! IT WILL NOT BE SHOWN AGAIN)")
-        print("=======================================================\n")
+    try:
+        await init_db()
+        async with AsyncSessionLocal() as db:
+            raw_key, record = await generate_api_key(
+                db=db, client_name=client_name, allowed_domain=allowed_domain
+            )
+            print("\n=======================================================")
+            print("         AccessAPIKey Created Successfully             ")
+            print("=======================================================")
+            print(f"  ID:             {record.id}")
+            print(f"  Client Name:    {record.client_name}")
+            print(f"  Allowed Domain: {record.allowed_domain or 'Any (*)'}")
+            print(f"  Key Prefix:     {record.key_prefix}")
+            print("-------------------------------------------------------")
+            print(f"  RAW SECRET KEY: {raw_key}")
+            print("  (STORE THIS KEY SECURELY! IT WILL NOT BE SHOWN AGAIN)")
+            print("=======================================================\n")
+    finally:
+        await engine.dispose()
 
 
 async def run_list():
-    await init_db()
-    async with AsyncSessionLocal() as db:
-        keys = await list_api_keys(db)
-        print("\n==================================================================================================")
-        print(" ID  | Prefix        | Client Name                  | Domain             | Status   | Created At")
-        print("--------------------------------------------------------------------------------------------------")
-        if not keys:
-            print(" No AccessAPIKeys found in database.")
-        for k in keys:
-            status_str = "ACTIVE" if k.is_active else "REVOKED"
-            domain_str = k.allowed_domain or "*"
-            created_str = k.created_at.strftime("%Y-%m-%d %H:%M") if k.created_at else "-"
-            print(f" {k.id:<3} | {k.key_prefix:<13} | {k.client_name:<28} | {domain_str:<18} | {status_str:<8} | {created_str}")
-        print("==================================================================================================\n")
+    try:
+        await init_db()
+        async with AsyncSessionLocal() as db:
+            keys = await list_api_keys(db)
+            print("\n==================================================================================================")
+            print(" ID  | Prefix        | Client Name                  | Domain             | Status   | Created At")
+            print("--------------------------------------------------------------------------------------------------")
+            if not keys:
+                print(" No AccessAPIKeys found in database.")
+            for k in keys:
+                status_str = "ACTIVE" if k.is_active else "REVOKED"
+                domain_str = k.allowed_domain or "*"
+                created_str = k.created_at.strftime("%Y-%m-%d %H:%M") if k.created_at else "-"
+                print(f" {k.id:<3} | {k.key_prefix:<13} | {k.client_name:<28} | {domain_str:<18} | {status_str:<8} | {created_str}")
+            print("==================================================================================================\n")
+    finally:
+        await engine.dispose()
 
 
 async def run_revoke(key_id: int):
-    await init_db()
-    async with AsyncSessionLocal() as db:
-        success = await revoke_api_key(db, key_id)
-        if success:
-            print(f"\nSuccessfully revoked AccessAPIKey ID={key_id}\n")
-        else:
-            print(f"\nError: AccessAPIKey ID={key_id} not found.\n")
+    try:
+        await init_db()
+        async with AsyncSessionLocal() as db:
+            success = await revoke_api_key(db, key_id)
+            if success:
+                print(f"\nSuccessfully revoked AccessAPIKey ID={key_id}\n")
+            else:
+                print(f"\nError: AccessAPIKey ID={key_id} not found.\n")
+    finally:
+        await engine.dispose()
 
 
 def main():
