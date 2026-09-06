@@ -101,5 +101,10 @@ class Settings(BaseSettings):
     # API Key requirement toggle for gateway query endpoints (default False)
     require_api_key_for_query: bool = os.environ.get("REQUIRE_API_KEY_FOR_QUERY", "false").lower() in ("true", "1", "yes")
 
+    # Kokoro Audio TTS settings
+    kokoro_model_path: str = os.environ.get("KOKORO_MODEL_PATH", "kokoro-v1_0.onnx")
+    kokoro_voices_path: str = os.environ.get("KOKORO_VOICES_PATH", "voices-v1_0.bin")
+    kokoro_default_voice: str = os.environ.get("KOKORO_DEFAULT_VOICE", "af_sarah")
+
 
 settings = Settings()
