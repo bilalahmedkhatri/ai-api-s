@@ -1,11 +1,12 @@
-"""app/services/tts_service.py — Kokoro Text-to-Speech (TTS) Service using asyncio.to_thread."""
+"""app/services/tts_service.py — Kokoro Text-to-Speech (TTS) Service using asyncio.to_thread and smart text chunking."""
 
 import asyncio
 import io
 import logging
-import os
+import re
 from pathlib import Path
 
+import numpy as np
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,39 @@ def get_available_voices() -> list[str]:
         ]
 
 
+def split_text_into_chunks(text: str, max_chars: int = 400) -> list[str]:
+    """
+    Split long text into sentence/paragraph chunks for optimal TTS phonemization
+    and memory usage, avoiding phonemizer line mismatch warnings.
+    """
+    cleaned_text = text.strip()
+    if not cleaned_text:
+        return []
+
+    # Split by newlines first
+    paragraphs = [p.strip() for p in cleaned_text.split("\n") if p.strip()]
+    chunks = []
+
+    for paragraph in paragraphs:
+        if len(paragraph) <= max_chars:
+            chunks.append(paragraph)
+        else:
+            # Split paragraph into sentences by punctuation (. ! ?)
+            sentences = re.split(r"(?<=[.!?])\s+", paragraph)
+            current_chunk = ""
+            for sentence in sentences:
+                if len(current_chunk) + len(sentence) + 1 <= max_chars:
+                    current_chunk = f"{current_chunk} {sentence}".strip()
+                else:
+                    if current_chunk:
+                        chunks.append(current_chunk)
+                    current_chunk = sentence
+            if current_chunk:
+                chunks.append(current_chunk)
+
+    return chunks if chunks else [cleaned_text]
+
+
 def _generate_speech_cpu(
     text: str,
     voice: str | None = None,
@@ -71,18 +105,43 @@ def _generate_speech_cpu(
     """
     Synchronous CPU-bound audio generation worker.
     Runs inside worker thread pool via asyncio.to_thread().
+    Uses sentence chunking to handle large text contexts (5,000 to 10,000+ chars).
     """
     import soundfile as sf  # noqa: PLC0415
 
     kokoro = get_kokoro_model()
     voice_name = voice or settings.kokoro_default_voice
 
-    logger.info("Generating Kokoro TTS audio for text length=%d, voice=%s, speed=%.2f", len(text), voice_name, speed)
-    samples, sample_rate = kokoro.create(text, voice=voice_name, speed=speed, lang=lang)
+    chunks = split_text_into_chunks(text, max_chars=400)
+    logger.info(
+        "Generating Kokoro TTS audio for total text length=%d across %d chunk(s), voice=%s, speed=%.2f",
+        len(text),
+        len(chunks),
+        voice_name,
+        speed,
+    )
+
+    all_samples = []
+    sample_rate = 24000
+
+    for idx, chunk in enumerate(chunks, 1):
+        try:
+            samples, sr = kokoro.create(chunk, voice=voice_name, speed=speed, lang=lang)
+            sample_rate = sr
+            if len(samples) > 0:
+                all_samples.append(samples)
+        except Exception as exc:
+            logger.warning("Error generating audio for chunk %d/%d ('%s...'): %s", idx, len(chunks), chunk[:30], exc)
+
+    if not all_samples:
+        raise RuntimeError("Failed to generate audio for any text chunks.")
+
+    # Concatenate all numpy sample arrays cleanly
+    final_samples = np.concatenate(all_samples)
 
     # Convert audio numpy samples to WAV bytes buffer
     buf = io.BytesIO()
-    sf.write(buf, samples, sample_rate, format="WAV")
+    sf.write(buf, final_samples, sample_rate, format="WAV")
     wav_bytes = buf.getvalue()
 
     return wav_bytes, sample_rate
