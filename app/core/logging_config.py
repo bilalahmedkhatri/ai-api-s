@@ -51,3 +51,7 @@ def setup_logging(log_dir: str = "logs", max_bytes: int = 10 * 1024 * 1024, back
     console_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
 
     logging.basicConfig(level=logging.INFO, handlers=[json_handler, console_handler])
+
+    # Silence verbose internal token-mismatch logger from phonemizer
+    logging.getLogger("phonemizer").setLevel(logging.ERROR)
+
