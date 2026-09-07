@@ -5,11 +5,18 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from app.api.v1.audio.schemas import TTSRequest
 from app.core.auth import get_current_api_key
 from app.models.db_models import AccessAPIKey
-from app.services.tts_service import generate_speech
+from app.services.tts_service import generate_speech, get_available_voices
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/audio", tags=["audio"])
+
+
+@router.get("/voices", summary="List all available Kokoro voices")
+async def list_voices_endpoint():
+    """Returns list of 54 available Kokoro voices from voices-v1_0.bin."""
+    voices = get_available_voices()
+    return {"status": "success", "count": len(voices), "voices": voices}
 
 
 @router.post(

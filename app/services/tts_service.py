@@ -47,6 +47,21 @@ def get_kokoro_model():
     return _kokoro_instance
 
 
+def get_available_voices() -> list[str]:
+    """Return list of available voice identifiers in Kokoro voices.bin."""
+    try:
+        kokoro = get_kokoro_model()
+        return kokoro.get_voices()
+    except Exception as exc:
+        logger.error("Error retrieving Kokoro voices list: %s", exc)
+        return [
+            "af_sarah", "af_bella", "af_heart", "af_alloy", "af_aoede", "af_jessica", "af_kore", "af_nicole", "af_nova", "af_river", "af_sky",
+            "am_adam", "am_echo", "am_eric", "am_fenrir", "am_liam", "am_michael", "am_onyx", "am_puck", "am_santa",
+            "bf_alice", "bf_emma", "bf_isabella", "bf_lily",
+            "bm_daniel", "bm_fable", "bm_george", "bm_lewis",
+        ]
+
+
 def _generate_speech_cpu(
     text: str,
     voice: str | None = None,
