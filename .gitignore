@@ -232,3 +232,8 @@ logs/
 
 # Pyenv / UV Python version lock
 .python-version
+
+# Kokoro Model Weights
+*.onnx
+*.bin
+
