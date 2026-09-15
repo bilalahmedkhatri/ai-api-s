@@ -9,15 +9,16 @@ from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import _rate_limit_exceeded_handler
 
 from app.api.v1.router import v1_router
 from app.core.config import settings
 from app.core.logging_config import setup_logging
 from app.core.middleware import RequestIDMiddleware
-from app.db.database import init_db
-
 setup_logging()
 logger = logging.getLogger(__name__)
 
@@ -38,11 +39,14 @@ if _sentry_dsn and "..." not in _sentry_dsn:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await init_db()
     yield
 
 
 app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan)
+
+import os
+os.makedirs(settings.generated_media_dir, exist_ok=True)
+app.mount("/static/generated", StaticFiles(directory=settings.generated_media_dir), name="static")
 
 app.add_middleware(
     CORSMiddleware,
@@ -52,6 +56,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(RequestIDMiddleware)
+
+from app.core.middleware import limiter
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 @app.exception_handler(RequestValidationError)

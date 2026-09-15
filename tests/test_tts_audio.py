@@ -18,6 +18,10 @@ async def test_tts_request_schema_validation():
 @pytest.mark.asyncio
 async def test_tts_speech_endpoint_missing_model_files(monkeypatch):
     """When ONNX model files are missing, returns 503 Service Unavailable."""
+    def mock_get_kokoro_missing():
+        raise FileNotFoundError("Kokoro ONNX model files missing: 'missing.onnx'")
+
+    monkeypatch.setattr("app.services.tts_service.get_kokoro_model", mock_get_kokoro_missing)
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://testserver"
     ) as ac:
@@ -25,8 +29,9 @@ async def test_tts_speech_endpoint_missing_model_files(monkeypatch):
             "/api/v1/audio/speech",
             json={"text": "Testing Kokoro TTS model", "voice": "af_sarah"},
         )
-        # Without kokoro-v1_0.onnx downloaded locally, service returns 503
         assert resp.status_code in (503, 500)
+
+
 
 
 @pytest.mark.asyncio

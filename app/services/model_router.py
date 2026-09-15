@@ -32,13 +32,16 @@ _QWEN_72B           = "groq/qwen-2.5-coder-32b"          # math + code primary
 _LLAMA_70B          = "groq/llama-3.3-70b-versatile"     # reasoning + creative primary
 _COMMAND_R          = "cohere/command-r-plus"             # RAG primary
 _OPENROUTER_FALLBACK = "openrouter/meta-llama/llama-3.3-70b-instruct:free"
+_GEMMA_4_31B        = "openrouter/google/gemma-4-31b-it:free"     # Gemma 4 31B free tier
+_GEMMA_4_26B        = "openrouter/google/gemma-4-26b-a4b-it:free" # Gemma 4 26B A4B free tier
+_GEMMA_3_27B        = "openrouter/google/gemma-3-27b-it:free"     # Gemma 3 27B free tier
 _LLAMA_8B           = "groq/llama-3.1-8b-instant"        # cheap fast fallback
 _GPT4O_MINI         = "gpt-4o-mini"                      # ultimate reliable fallback
 
 _PRIMARY_VISION = "gemini/gemini-flash-latest"
 _VISION_FALLBACKS = [
-    "openrouter/google/gemma-4-31b-it:free",
-    "openrouter/free"
+    _GEMMA_4_31B,
+    "openrouter/free",
 ]
 
 # ── Routing matrix ─────────────────────────────────────────────────────────────

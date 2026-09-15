@@ -38,6 +38,7 @@ intelligent routing layer in front of multiple LLM providers, search engines, an
 | Capability | Implementation |
 |---|---|
 | Multi-modal input ingestion | Audio (Whisper STT), Image (GPT-4o Vision), Video (ffmpeg + Vision) |
+| Multi-modal audio synthesis (TTS) | Gemini 3.6 Flash TTS (9 Prebuilt Voices, Live Samples) + Kokoro ONNX local TTS |
 | Hybrid intent routing | Regex rule engine + semantic cosine similarity classifier |
 | Search aggregation | Tavily (AI search), Brave Search, DuckDuckGo (free fallback) |
 | RAG pipeline | Search results injected as context into LLM prompt |
@@ -263,9 +264,12 @@ Override via EMBEDDING_MODEL env var. Any litellm-compatible embedding model wor
 
 ### 5.3 Multi-Modal Models
 
-| Input Type | Model | Provider | Endpoint |
+| Input/Output Type | Model | Provider | Endpoint |
 |---|---|---|---|
-| Audio (STT) | openai/whisper-1 | OpenAI Whisper | /api/v1/ingest/audio/ |
+| Audio (STT Ingestion) | openai/whisper-1 | OpenAI Whisper | /api/v1/ingest/audio/ |
+| Audio (TTS Synthesis) | gemini-3.6-flash | Google AI Studio | /api/v1/audio/gemini-tts |
+| Voice List & Samples | gemini-3.6-flash | Google AI Studio | /api/v1/audio/gemini-voices, /api/v1/audio/gemini-sample |
+| Local TTS Synthesis | Kokoro-82M ONNX | Local ONNX Runtime | /api/v1/audio/speech |
 | Image (Vision) | gpt-4o | OpenAI | /api/v1/ingest/image/ |
 | Video (frames + Vision) | gpt-4o | OpenAI via litellm | /api/v1/ingest/video/ |
 
@@ -283,6 +287,7 @@ All LLM calls go through LiteLLM (litellm>=1.96.0), which provides:
 
 | Provider | Purpose | Env Var |
 |---|---|---|
+| **Google AI Studio** | Gemini 3.6 Flash Audio Output & TTS | GEMINI_API_KEY |
 | **OpenAI** | Whisper STT, GPT-4o Vision, Embeddings | OPENAI_API_KEY |
 | **Groq** | Qwen-2.5-Coder-32B, Llama-3.3-70B, Llama-3.1-8B | GROQ_API_KEY |
 | **Cohere** | Command-R+ (RAG fallback) | COHERE_API_KEY |
@@ -476,6 +481,15 @@ Response:
 All ingest endpoints accept multipart/form-data with a "file" field and return the extracted
 text or description. The result can then be passed to /api/v1/query/ with the appropriate input_type.
 
+### Multi-Modal Audio & Speech (TTS)
+
+| Method | Path | Request Format | Description / Model |
+|---|---|---|---|
+| POST | /api/v1/audio/gemini-tts | JSON `{"text": "...", "voice": "Puck"}` | Synthesizes WAV audio from text using Gemini 3.6 Flash |
+| GET | /api/v1/audio/gemini-voices | Query Params: None | Returns full metadata & sample URLs for all 9 prebuilt voices |
+| GET | /api/v1/audio/gemini-sample | Query Params: `?voice=Puck` | Streams direct WAV preview sample audio for any selected voice |
+| POST | /api/v1/audio/speech | JSON `{"text": "...", "voice": "af_sarah"}` | Synthesizes WAV audio locally using Kokoro-82M ONNX |
+
 ---
 
 ## 10. Configuration and Environment Variables
@@ -500,7 +514,8 @@ DATABASE_URL=sqlite+aiosqlite:///./gateway.db
 EMBEDDING_MODEL=text-embedding-3-small
 DEFAULT_LLM_MODEL=gpt-4o-mini
 
-# LLM Provider Keys
+# LLM & Multi-Modal Provider Keys
+GEMINI_API_KEY=AIzaSy...
 OPENAI_API_KEY=sk-...
 GROQ_API_KEY=gsk_...
 COHERE_API_KEY=...

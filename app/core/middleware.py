@@ -8,7 +8,13 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
 logger = logging.getLogger(__name__)
+
+# SlowAPI Limiter instance used across routers
+limiter = Limiter(key_func=get_remote_address)
 
 
 class RequestIDMiddleware(BaseHTTPMiddleware):

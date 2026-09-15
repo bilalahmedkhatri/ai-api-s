@@ -1,9 +1,10 @@
 """Core application configuration using Pydantic v2 BaseSettings."""
 
+import os
+
+from dotenv import load_dotenv
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from dotenv import load_dotenv
-import os
 
 load_dotenv()
 
@@ -92,8 +93,9 @@ class Settings(BaseSettings):
     # Listed here only for documentation; pydantic-settings will forward them.
     groq_api_key: str | None = os.environ.get("GROQ_API_KEY")
     openrouter_api_key: str | None = os.environ.get("OPENROUTER_API_KEY")
-    cohere_api_key: str | None = os.environ.get("COHERE_API_KEY") 
-    openai_api_key: str | None = os.environ.get("OPENAI_API_KEY") 
+    cohere_api_key: str | None = os.environ.get("COHERE_API_KEY")
+    openai_api_key: str | None = os.environ.get("OPENAI_API_KEY")
+    gemini_api_key: str | None = os.environ.get("GEMINI_API_KEY")
 
     # Cron security token — set CRON_SECRET in .env to secure trigger endpoints
     cron_secret: str | None = os.environ.get("CRON_SECRET")
@@ -105,6 +107,26 @@ class Settings(BaseSettings):
     kokoro_model_path: str = os.environ.get("KOKORO_MODEL_PATH", "kokoro-v1_0.onnx")
     kokoro_voices_path: str = os.environ.get("KOKORO_VOICES_PATH", "voices-v1_0.bin")
     kokoro_default_voice: str = os.environ.get("KOKORO_DEFAULT_VOICE", "af_sarah")
+
+    # Google OAuth2 — create credentials at console.cloud.google.com
+    google_client_id: str | None = os.environ.get("GOOGLE_CLIENT_ID")
+    google_client_secret: str | None = os.environ.get("GOOGLE_CLIENT_SECRET")
+
+    # JWT signing secret — generate with: python -c "import secrets; print(secrets.token_hex(32))"
+    secret_key: str = os.environ.get("SECRET_KEY", "change-me-in-production")
+
+    # Fernet encryption key for sensitive tokens (generate with: cryptography.fernet.Fernet.generate_key().decode())
+    encryption_key: str | None = os.environ.get("ENCRYPTION_KEY")
+
+    # Facebook API settings
+    facebook_app_id: str | None = os.environ.get("FACEBOOK_APP_ID")
+    facebook_app_secret: str | None = os.environ.get("FACEBOOK_APP_SECRET")
+
+    # Frontend origin for post-OAuth redirect (must be in ALLOWED_ORIGINS too)
+    frontend_origin: str = os.environ.get("FRONTEND_ORIGIN", "http://localhost:3000")
+
+    # Generated media local storage directory
+    generated_media_dir: str = os.environ.get("GENERATED_MEDIA_DIR", "static/generated")
 
 
 settings = Settings()

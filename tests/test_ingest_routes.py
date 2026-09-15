@@ -21,6 +21,24 @@ def test_ingest_routes_registered():
     assert "/api/v1/ingest/audio/" in paths
     assert "/api/v1/ingest/image/" in paths
     assert "/api/v1/ingest/video/" in paths
+    assert "/api/v1/audio/gemini-voices" in paths
+    assert "/api/v1/audio/gemini-tts" in paths
+    assert "/api/v1/audio/gemini-sample" in paths
+
+
+def test_gemini_voices_endpoint():
+    """Verify gemini voices endpoint returns 200 and list of voices with metadata."""
+    response = client.get("/api/v1/audio/gemini-voices")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "success"
+    assert "voices" in data
+    voice_names = [v["name"] for v in data["voices"]]
+    assert "Puck" in voice_names
+    assert "sample_audio_url" in data["voices"][0]
+
+
+
 
 
 def test_audio_wrong_format():

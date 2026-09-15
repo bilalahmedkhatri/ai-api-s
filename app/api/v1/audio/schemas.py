@@ -4,17 +4,21 @@ from typing import Annotated
 from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 
-class TTSRequest(BaseModel):
+class DynamicTTSRequest(BaseModel):
     text: str = Field(
         ...,
         validation_alias=AliasChoices("text", "input", "prompt"),
         min_length=1,
         max_length=50000,
-        description="Text to synthesize into speech (supports text, input, or prompt fields up to 50,000 chars)",
+        description="Text to synthesize into speech",
     )
-    voice: str | None = Field(default=None, description="Voice identifier e.g. 'af_sarah', 'am_adam', 'af_bella'")
-    speed: float | None = Field(default=1.0, ge=0.1, le=5.0, description="Speech rate multiplier (0.1 to 5.0)")
-    lang: str | None = Field(default="en-us", description="Language code e.g. 'en-us', 'en-gb'")
+    model: str = Field(
+        default="gemini-2.5-flash-preview-tts",
+        description="The target TTS model identifier from the database",
+    )
+    voice: str | None = Field(default=None, description="Voice identifier. If omitted, model default is used.")
+    speed: float | None = Field(default=1.0, ge=0.1, le=5.0, description="Speech rate multiplier (for supported models)")
+    lang: str | None = Field(default="en-us", description="Language code (for supported models)")
 
     @field_validator("text", mode="before")
     @classmethod
