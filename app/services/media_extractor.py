@@ -44,20 +44,23 @@ def get_b2_session():
     ), Config(signature_version='s3v4')
 
 
-async def fetch_pexels(keyword: str, quantity: int, filters: dict, client: httpx.AsyncClient) -> list[str]:
+async def fetch_pexels(keyword: str, quantity: int, filters: dict, client: httpx.AsyncClient, page: int = 1) -> list[str]:
     if not settings.pexels_api_key:
         return []
 
     is_video = filters.get("image_type", "").lower() == "video"
+    requested_orientation = filters.get("orientation", "").lower()
+    
+    # Always fetch a larger batch so we can manually filter
+    per_page = 15
     if is_video:
-        url = f"https://api.pexels.com/videos/search?query={quote_plus(keyword)}&per_page={quantity}"
+        url = f"https://api.pexels.com/videos/search?query={quote_plus(keyword)}&per_page={per_page}&page={page}"
     else:
-        url = f"https://api.pexels.com/v1/search?query={quote_plus(keyword)}&per_page={quantity}"
+        url = f"https://api.pexels.com/v1/search?query={quote_plus(keyword)}&per_page={per_page}&page={page}"
 
-    if filters.get("orientation"):
-        ori = filters["orientation"].lower()
-        if ori in ["landscape", "portrait", "square"]:
-            url += f"&orientation={ori}"
+    if requested_orientation and not is_video:
+        if requested_orientation in ["landscape", "portrait", "square"]:
+            url += f"&orientation={requested_orientation}"
 
     headers = {"Authorization": settings.pexels_api_key}
 
@@ -68,35 +71,51 @@ async def fetch_pexels(keyword: str, quantity: int, filters: dict, client: httpx
 
         media_urls = []
         if is_video:
-            for video in data.get("videos", [])[:quantity]:
+            for video in data.get("videos", []):
+                width = video.get("width", 0)
+                height = video.get("height", 0)
+                
+                # Strict manual validation
+                if requested_orientation == "portrait" and width >= height:
+                    continue
+                if requested_orientation == "landscape" and height >= width:
+                    continue
+                    
                 files = video.get("video_files", [])
                 if files:
                     media_urls.append(files[0].get("link"))
+                    
+                if len(media_urls) >= quantity:
+                    break
         else:
-            for photo in data.get("photos", [])[:quantity]:
+            for photo in data.get("photos", []):
                 img = photo.get("src", {}).get("original") or photo.get("src", {}).get("large")
                 if img:
                     media_urls.append(img)
+                if len(media_urls) >= quantity:
+                    break
         return media_urls
     except Exception as exc:
         logger.error("Pexels API error for keyword %s: %s", keyword, exc)
         return []
 
 
-async def fetch_pixabay(keyword: str, quantity: int, filters: dict, client: httpx.AsyncClient) -> list[str]:
+async def fetch_pixabay(keyword: str, quantity: int, filters: dict, client: httpx.AsyncClient, page: int = 1) -> list[str]:
     if not settings.pixabay_api_key:
         return []
 
     is_video = filters.get("image_type", "").lower() == "video"
-    base_path = "/api/videos/" if is_video else "/api/"
+    requested_orientation = filters.get("orientation", "").lower()
     
-    url = f"https://pixabay.com{base_path}?key={settings.pixabay_api_key}&q={quote_plus(keyword)}&per_page={max(quantity, 3)}"
+    base_path = "/api/videos/" if is_video else "/api/"
+    per_page = 15
+    
+    url = f"https://pixabay.com{base_path}?key={settings.pixabay_api_key}&q={quote_plus(keyword)}&per_page={per_page}&page={page}"
 
-    if filters.get("orientation"):
-        ori = filters["orientation"].lower()
-        if ori == "landscape":
+    if requested_orientation and not is_video:
+        if requested_orientation == "landscape":
             url += "&orientation=horizontal"
-        elif ori == "portrait":
+        elif requested_orientation == "portrait":
             url += "&orientation=vertical"
 
     if filters.get("sort_by"):
@@ -117,16 +136,32 @@ async def fetch_pixabay(keyword: str, quantity: int, filters: dict, client: http
         data = response.json()
 
         media_urls = []
-        for hit in data.get("hits", [])[:quantity]:
+        for hit in data.get("hits", []):
             if is_video:
                 videos = hit.get("videos", {})
-                vid = videos.get("medium", {}).get("url") or videos.get("large", {}).get("url") or videos.get("small", {}).get("url")
-                if vid:
-                    media_urls.append(vid)
+                vid_data = videos.get("large", {}) or videos.get("medium", {}) or videos.get("small", {})
+                
+                width = vid_data.get("width", 0)
+                height = vid_data.get("height", 0)
+                
+                # Strict manual validation
+                if requested_orientation == "portrait" and width >= height:
+                    continue
+                if requested_orientation == "landscape" and height >= width:
+                    continue
+                    
+                vid_url = vid_data.get("url")
+                if vid_url:
+                    media_urls.append(vid_url)
+                    
+                if len(media_urls) >= quantity:
+                    break
             else:
                 img = hit.get("largeImageURL") or hit.get("webformatURL")
                 if img:
                     media_urls.append(img)
+                if len(media_urls) >= quantity:
+                    break
         return media_urls
     except Exception as exc:
         logger.error("Pixabay API error for keyword %s: %s", keyword, exc)
@@ -176,17 +211,31 @@ async def extract_and_send_media(user_id: str, item_id: str, keywords: list, fil
     async with httpx.AsyncClient(headers=default_headers) as client:
         for k_obj in keywords:
             keyword = k_obj.keyword
-            quantity = k_obj.quantity_to_download or 3
+            target_quantity = k_obj.quantity_to_download or 3
             
-            # Add a 1.5-second delay to avoid hitting rate limits on Pexels/Pixabay
+            keyword_urls = []
+            
+            # ATTEMPT 1 (Page 1)
             await asyncio.sleep(1.5)
+            pexels_urls = await fetch_pexels(keyword, target_quantity, filters, client, page=1)
+            keyword_urls.extend(pexels_urls)
+            
+            if len(keyword_urls) < target_quantity:
+                pixabay_urls = await fetch_pixabay(keyword, target_quantity - len(keyword_urls), filters, client, page=1)
+                keyword_urls.extend(pixabay_urls)
+                
+            # ATTEMPT 2 (Page 2) - Only if we still need more
+            if len(keyword_urls) < target_quantity:
+                await asyncio.sleep(1.5)
+                pexels_urls_2 = await fetch_pexels(keyword, target_quantity - len(keyword_urls), filters, client, page=2)
+                keyword_urls.extend(pexels_urls_2)
+                
+                if len(keyword_urls) < target_quantity:
+                    pixabay_urls_2 = await fetch_pixabay(keyword, target_quantity - len(keyword_urls), filters, client, page=2)
+                    keyword_urls.extend(pixabay_urls_2)
 
-            pexels_urls = await fetch_pexels(keyword, quantity, filters, client)
-            pixabay_urls = await fetch_pixabay(keyword, quantity, filters, client)
-
-            all_urls = pexels_urls + pixabay_urls
-
-            for media_url in all_urls:
+            # Upload what we successfully found up to the target quantity
+            for media_url in keyword_urls[:target_quantity]:
                 object_key = await upload_image_to_b2(media_url, user_id, item_id, client)
                 if object_key:
                     extracted_keys.append(object_key)
