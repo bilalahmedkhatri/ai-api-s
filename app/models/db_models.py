@@ -352,3 +352,16 @@ class FacebookPageToken(Base):
     )
 
     user: Mapped["User | None"] = relationship("User")
+
+class ExtractedMedia(Base):
+    """Raw media extracted from external sources and stored in B2."""
+
+    __tablename__ = "extracted_media"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    item_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    object_key: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

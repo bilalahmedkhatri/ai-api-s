@@ -490,6 +490,26 @@ text or description. The result can then be passed to /api/v1/query/ with the ap
 | GET | /api/v1/audio/gemini-sample | Query Params: `?voice=Puck` | Streams direct WAV preview sample audio for any selected voice |
 | POST | /api/v1/audio/speech | JSON `{"text": "...", "voice": "af_sarah"}` | Synthesizes WAV audio locally using Kokoro-82M ONNX |
 
+### Async Media Extractor
+
+| Method | Path | Description |
+|---|---|---|
+| POST | /api/v1/media/process-urls | Submits keywords for background image downloading from Pexels/Pixabay |
+
+Request body:
+```json
+{
+  "keywords": ["nature", "sports cars"],
+  "filters": {
+    "orientation": "landscape",
+    "sort_by": "most_downloaded"
+  }
+}
+```
+
+Returns `202 Accepted` immediately. A FastAPI `BackgroundTask` will run in the background, fetch up to 3 high-quality images per provider (Pexels and Pixabay) for each keyword, and save them to the `static/download/` directory on the server. *(Note: The callback URL has been removed as requested, so the backend handles the images entirely internally).*
+*Note for future updates: Consider Option A (uploading the downloaded images to a cloud storage like S3 and sending the frontend a list of generated URLs) if local storage becomes a bottleneck.*
+
 ---
 
 ## 10. Configuration and Environment Variables

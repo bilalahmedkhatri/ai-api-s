@@ -97,6 +97,16 @@ class Settings(BaseSettings):
     openai_api_key: str | None = os.environ.get("OPENAI_API_KEY")
     gemini_api_key: str | None = os.environ.get("GEMINI_API_KEY")
 
+    # Media API keys
+    pexels_api_key: str | None = os.environ.get("PEXELS_API_KEY")
+    pixabay_api_key: str | None = os.environ.get("PIXABAY_API_KEY")
+
+    # Backblaze B2 settings
+    b2_bucket_name: str | None = os.environ.get("B2_BUCKET_NAME")
+    b2_application_key_id: str | None = os.environ.get("B2_APPLICATION_KEY_ID")
+    b2_application_key: str | None = os.environ.get("B2_APPLICATION_KEY")
+    b2_endpoint_url: str | None = os.environ.get("B2_ENDPOINT_URL")
+
     # Cron security token — set CRON_SECRET in .env to secure trigger endpoints
     cron_secret: str | None = os.environ.get("CRON_SECRET")
 

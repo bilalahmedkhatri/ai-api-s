@@ -29,6 +29,8 @@ dependencies = [
     "slowapi>=0.1.9",
     # Dynamic JSON path extraction for media generation
     "jsonpath-ng>=1.7",
+    "aioboto3>=15.5.0",
+    "boto3>=1.40.61",
 ]
 
 [dependency-groups]
