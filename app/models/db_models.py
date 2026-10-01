@@ -1,4 +1,4 @@
-"""SQLAlchemy ORM models for the AI gateway."""
+﻿"""SQLAlchemy ORM models for the AI gateway."""
 
 import datetime
 import json
@@ -46,7 +46,7 @@ class Query(Base):
 
 
 class SearchResult(Base):
-    """Raw response from a search aggregator (Tavily, Brave, DuckDuckGo, …)."""
+    """Raw response from a search aggregator (Tavily, Brave, DuckDuckGo, â€¦)."""
 
     __tablename__ = "search_results"
 
@@ -199,7 +199,7 @@ class TTSVoice(Base):
     model: Mapped["TTSModel"] = relationship("TTSModel")
 
 
-# ── User auth (Google OAuth2) ────────────────────────────────────────────────
+# â”€â”€ User auth (Google OAuth2) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class User(Base):
     """Authenticated user via Google OAuth2. No password stored."""
@@ -224,7 +224,7 @@ class User(Base):
     )
 
 
-# ── Dynamic Media Generation (Image + Video) ─────────────────────────────────
+# â”€â”€ Dynamic Media Generation (Image + Video) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class MediaModel(Base):
     """Dynamic provider configuration for image or video generation models."""
@@ -243,7 +243,7 @@ class MediaModel(Base):
     api_endpoint_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
     model_version: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
-    # Auth — stores the env var *name*, never the token itself
+    # Auth â€” stores the env var *name*, never the token itself
     auth_env_var: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Async polling configuration
@@ -255,7 +255,7 @@ class MediaModel(Base):
     poll_timeout_s: Mapped[int] = mapped_column(Integer, default=120, nullable=False)
     poll_interval_s: Mapped[int] = mapped_column(Integer, default=2, nullable=False)
 
-    # Dynamic result extraction — JSON config evaluated by jsonpath_ng at runtime
+    # Dynamic result extraction â€” JSON config evaluated by jsonpath_ng at runtime
     # Example: {"type": "json_path", "path": "output", "item_type": "url"}
     # Example: {"type": "json_path", "path": "artifacts[*].base64", "item_type": "base64"}
     # Example: {"type": "binary", "mime": "image/png"}
@@ -326,7 +326,7 @@ class MediaGeneration(Base):
     model: Mapped["MediaModel"] = relationship("MediaModel", back_populates="generations")
 
 
-# ── Facebook Integrations ──────────────────────────────────────────────────
+# â”€â”€ Facebook Integrations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class FacebookPageToken(Base):
     """Encrypted Facebook Page Access Tokens provided by the user."""
@@ -360,8 +360,82 @@ class ExtractedMedia(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    template_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     item_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     object_key: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class TTSJob(Base):
+    """Background TTS generation jobs."""
+
+    __tablename__ = "tts_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=True)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="processing", nullable=False)
+    audio_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), onupdate=func.now(), nullable=True
+    )
+
+
+class ProviderAPIKey(Base):
+    """
+    Encrypted API keys for external providers (Gemini, OpenAI, Groq, Brave, etc.).
+    Keys are stored encrypted using Fernet. Never stored as plain text.
+    """
+
+    __tablename__ = "provider_api_keys"
+    __table_args__ = (
+        UniqueConstraint("provider", "label", name="uq_provider_label"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    # Which provider this key belongs to â€” e.g. "gemini", "openai", "groq", "brave"
+    provider: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+
+    # Human-readable label to identify the key â€” e.g. "account-1", "personal", "work"
+    label: Mapped[str] = mapped_column(String(128), nullable=False)
+
+    # Fernet-encrypted API key â€” NEVER stored in plain text
+    encrypted_key: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # Rotation priority â€” lower number = used first (1 = highest priority)
+    priority: Mapped[int] = mapped_column(Integer, default=1, nullable=False, index=True)
+
+    # Soft enable/disable â€” set False to skip this key without deleting it
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    # Optional daily quota limit â€” None means unlimited
+    daily_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Counter reset every midnight UTC via a cron or reset_daily_counts()
+    requests_today: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    # Timestamp of the last successful API call using this key
+    last_used_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # When this key was added
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    @property
+    def is_within_limit(self) -> bool:
+        """True if this key has not exceeded its daily limit (or has no limit)."""
+        if self.daily_limit is None:
+            return True
+        return self.requests_today < self.daily_limit
+
+

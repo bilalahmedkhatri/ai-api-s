@@ -5,6 +5,11 @@ from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 
 class DynamicTTSRequest(BaseModel):
+    title: str | None = Field(
+        default=None,
+        max_length=100,
+        description="Optional title for the voiceover job",
+    )
     text: str = Field(
         ...,
         validation_alias=AliasChoices("text", "input", "prompt"),
@@ -16,9 +21,13 @@ class DynamicTTSRequest(BaseModel):
         default="gemini-2.5-flash-preview-tts",
         description="The target TTS model identifier from the database",
     )
+    provider: str | None = Field(
+        default=None,
+        description="Optional provider identifier (e.g. gemini, kokoro)",
+    )
     voice: str | None = Field(default=None, description="Voice identifier. If omitted, model default is used.")
-    speed: float | None = Field(default=1.0, ge=0.1, le=5.0, description="Speech rate multiplier (for supported models)")
     lang: str | None = Field(default="en-us", description="Language code (for supported models)")
+    extra_params: dict | None = Field(default=None, description="Optional extra parameters for specific models")
 
     @field_validator("text", mode="before")
     @classmethod
@@ -27,13 +36,19 @@ class DynamicTTSRequest(BaseModel):
             raise ValueError("Text for speech generation cannot be empty.")
         return str(v)
 
-    @field_validator("speed", mode="before")
+
+# Backward-compatible alias for existing tests
+TTSRequest = DynamicTTSRequest
+
+
+class RenewAudioUrlRequest(BaseModel):
+    job_id: str | None = Field(default=None, description="The UUID job_id of the TTS job to renew.")
+    url: str | None = Field(default=None, description="The expired or existing Backblaze audio URL.")
+
+    @field_validator("job_id", "url", mode="before")
     @classmethod
-    def validate_speed(cls, v: float | int | str | None) -> float:
-        if v is None:
-            return 1.0
-        try:
-            val = float(v)
-            return max(0.1, min(5.0, val))
-        except (ValueError, TypeError):
-            return 1.0
+    def clean_strings(cls, v: str | None) -> str | None:
+        if v is not None and isinstance(v, str):
+            cleaned = v.strip()
+            return cleaned if cleaned else None
+        return v

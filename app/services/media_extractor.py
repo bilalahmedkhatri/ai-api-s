@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import logging
 import os
 import uuid
@@ -168,7 +168,7 @@ async def fetch_pixabay(keyword: str, quantity: int, filters: dict, client: http
         return []
 
 
-async def upload_image_to_b2(url: str, user_id: str, item_id: str, client: httpx.AsyncClient) -> str | None:
+async def upload_image_to_b2(url: str, user_id: str, template_id: str | None, item_id: str, client: httpx.AsyncClient) -> str | None:
     try:
         response = await client.get(url, timeout=15)
         response.raise_for_status()
@@ -181,7 +181,11 @@ async def upload_image_to_b2(url: str, user_id: str, item_id: str, client: httpx
             name, ext = os.path.splitext(filename)
             filename = f"{name}_{uuid.uuid4().hex[:8]}{ext}"
             
-        object_key = f"media/{user_id}/{item_id}/{filename}"
+        # Use template_id in path to prevent cross-template contamination
+        if template_id:
+            object_key = f"media/{user_id}/{template_id}/{item_id}/{filename}"
+        else:
+            object_key = f"media/{user_id}/{item_id}/{filename}"
         
         # Upload to B2
         session, b2_config = get_b2_session()
@@ -200,7 +204,7 @@ async def upload_image_to_b2(url: str, user_id: str, item_id: str, client: httpx
         return None
 
 
-async def extract_and_send_media(user_id: str, item_id: str, keywords: list, filters: dict):
+async def extract_and_send_media(user_id: str, item_id: str, keywords: list, filters: dict, template_id: str | None = None):
     extracted_keys = []
 
     # Use a standard browser User-Agent to avoid 503/403 blocks from CDNs
@@ -236,7 +240,7 @@ async def extract_and_send_media(user_id: str, item_id: str, keywords: list, fil
 
             # Upload what we successfully found up to the target quantity
             for media_url in keyword_urls[:target_quantity]:
-                object_key = await upload_image_to_b2(media_url, user_id, item_id, client)
+                object_key = await upload_image_to_b2(media_url, user_id, template_id, item_id, client)
                 if object_key:
                     extracted_keys.append(object_key)
         
@@ -246,6 +250,7 @@ async def extract_and_send_media(user_id: str, item_id: str, keywords: list, fil
             for key in extracted_keys:
                 media_record = ExtractedMedia(
                     user_id=user_id,
+                    template_id=template_id,
                     item_id=item_id,
                     object_key=key
                 )
@@ -254,14 +259,17 @@ async def extract_and_send_media(user_id: str, item_id: str, keywords: list, fil
             logger.info("Saved %d media keys to DB for item %s", len(extracted_keys), item_id)
 
 
-async def get_media_urls_for_item(user_id: str, item_id: str) -> list[str]:
+async def get_media_urls_for_item(user_id: str, item_id: str, template_id: str | None = None) -> list[str]:
     """Fetch object keys from DB and generate pre-signed S3 URLs."""
     async with AsyncSessionLocal() as db_session:
+        filters = [
+            ExtractedMedia.user_id == user_id,
+            ExtractedMedia.item_id == item_id,
+        ]
+        if template_id:
+            filters.append(ExtractedMedia.template_id == template_id)
         result = await db_session.execute(
-            select(ExtractedMedia).where(
-                ExtractedMedia.user_id == user_id,
-                ExtractedMedia.item_id == item_id
-            )
+            select(ExtractedMedia).where(*filters)
         )
         media_records = result.scalars().all()
         
@@ -328,3 +336,5 @@ async def delete_media_urls(user_id: str, urls: list[str]) -> dict:
             await db_session.commit()
             
     return {"deleted": deleted_count, "failed": failed_count}
+
+

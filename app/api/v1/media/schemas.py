@@ -1,4 +1,4 @@
-
+﻿
 from pydantic import BaseModel
 
 
@@ -13,9 +13,11 @@ class KeywordRequest(BaseModel):
 
 class ProcessMediaRequest(BaseModel):
     user_id: str
+    template_id: str | None = None
     item_id: str
     keywords: list[KeywordRequest]
     filters: MediaFilter | None = None
 class DeleteMediaRequest(BaseModel):
     user_id: str
     urls: list[str]
+

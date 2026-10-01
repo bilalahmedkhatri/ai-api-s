@@ -96,6 +96,21 @@ class Settings(BaseSettings):
     cohere_api_key: str | None = os.environ.get("COHERE_API_KEY")
     openai_api_key: str | None = os.environ.get("OPENAI_API_KEY")
     gemini_api_key: str | None = os.environ.get("GEMINI_API_KEY")
+    # Comma-separated pool of Gemini API keys for round-robin rotation
+    # e.g. GEMINI_API_KEYS=key1,key2,key3
+    # Falls back to single GEMINI_API_KEY if not set.
+    gemini_api_keys_raw: str | None = os.environ.get("GEMINI_API_KEYS")
+
+    @property
+    def gemini_api_keys_pool(self) -> list[str]:
+        """Returns the list of available Gemini API keys for rotation."""
+        if self.gemini_api_keys_raw:
+            keys = [k.strip() for k in self.gemini_api_keys_raw.split(",") if k.strip()]
+            if keys:
+                return keys
+        if self.gemini_api_key:
+            return [self.gemini_api_key]
+        return []
 
     # Media API keys
     pexels_api_key: str | None = os.environ.get("PEXELS_API_KEY")
