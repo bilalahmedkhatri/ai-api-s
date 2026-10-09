@@ -1,7 +1,7 @@
 """app/services/key_manager.py — DB-backed provider API key rotation service."""
 
-import logging
 import datetime
+import logging
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -204,7 +204,7 @@ async def mark_key_used(db: AsyncSession, key_id: int) -> None:
         .where(ProviderAPIKey.id == key_id)
         .values(
             requests_today=ProviderAPIKey.requests_today + 1,
-            last_used_at=datetime.datetime.now(datetime.timezone.utc),
+            last_used_at=datetime.datetime.now(datetime.UTC),
         )
     )
     await db.commit()
@@ -239,3 +239,26 @@ async def mark_key_quota_exceeded(db: AsyncSession, key_id: int) -> None:
         )
     await db.commit()
     logger.warning("Marked key id=%d as quota-exceeded for provider rotation.", key_id)
+
+
+async def get_key_for_model(db: AsyncSession, model_name: str) -> tuple[int, str] | None:
+    """
+    Look up an AIModel in DB to determine its provider, then fetch the
+    highest-priority available decrypted ProviderAPIKey for that provider.
+    """
+    from app.models.db_models import AIModel
+
+    result = await db.execute(
+        select(AIModel).where(AIModel.name == model_name, AIModel.is_active.is_(True))
+    )
+    model = result.scalar_one_or_none()
+    if not model and "/" in model_name:
+        # Fallback to search without provider prefix
+        clean_name = model_name.rsplit("/", maxsplit=1)[-1]
+        result = await db.execute(
+            select(AIModel).where(AIModel.name.ilike(f"%{clean_name}%"), AIModel.is_active.is_(True))
+        )
+        model = result.scalars().first()
+
+    provider = model.provider if model else (model_name.split("/", maxsplit=1)[0] if "/" in model_name else "groq")
+    return await get_next_available_key(db, provider)

@@ -26,6 +26,7 @@ class DynamicTTSRequest(BaseModel):
         description="Optional provider identifier (e.g. gemini, kokoro)",
     )
     voice: str | None = Field(default=None, description="Voice identifier. If omitted, model default is used.")
+    speed: float | None = Field(default=None, description="Optional playback speed")
     lang: str | None = Field(default="en-us", description="Language code (for supported models)")
     extra_params: dict | None = Field(default=None, description="Optional extra parameters for specific models")
 

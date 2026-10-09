@@ -1,4 +1,4 @@
-﻿"""SQLAlchemy ORM models for the AI gateway."""
+"""SQLAlchemy ORM models for the AI gateway."""
 
 import datetime
 import json
@@ -99,6 +99,14 @@ class AIModel(Base):
     completion_price_per_1k: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    # Linked provider API keys for this model's provider
+    api_keys: Mapped[list["ProviderAPIKey"]] = relationship(
+        "ProviderAPIKey",
+        primaryjoin="foreign(ProviderAPIKey.provider) == AIModel.provider",
+        viewonly=True,
+        lazy="selectin",
     )
 
 
@@ -437,5 +445,13 @@ class ProviderAPIKey(Base):
         if self.daily_limit is None:
             return True
         return self.requests_today < self.daily_limit
+
+    # Linked AI models supported by this provider key
+    models: Mapped[list["AIModel"]] = relationship(
+        "AIModel",
+        primaryjoin="foreign(AIModel.provider) == ProviderAPIKey.provider",
+        viewonly=True,
+        lazy="selectin",
+    )
 
 

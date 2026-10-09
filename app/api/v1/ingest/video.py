@@ -12,7 +12,6 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-import litellm
 from fastapi import APIRouter, HTTPException, Request, UploadFile
 
 from app.api.v1.ingest.schemas import IngestVideoResponse

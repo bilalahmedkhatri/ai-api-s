@@ -10,7 +10,6 @@ import base64
 import logging
 from pathlib import Path
 
-import litellm
 from fastapi import APIRouter, HTTPException, Request, UploadFile
 
 from app.api.v1.ingest.schemas import IngestImageResponse

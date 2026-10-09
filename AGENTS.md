@@ -474,12 +474,11 @@ Response:
 
 | Method | Path | Accepted Formats | Model |
 |---|---|---|---|
-| POST | /api/v1/ingest/audio/ | .wav, .mp3, .ogg, .flac, .m4a | OpenAI Whisper |
+| POST | /api/v1/ingest/audio/ | Audio: .wav, .mp3, .ogg, .flac, .m4a, .aac, .wma / Video: .mp4, .mov, .avi, .mkv, .webm, etc. | OpenAI Whisper |
 | POST | /api/v1/ingest/image/ | .jpg, .jpeg, .png, .gif, .webp | GPT-4o Vision |
 | POST | /api/v1/ingest/video/ | .mp4, .avi, .mov, .mkv, .webm | ffmpeg + GPT-4o Vision |
 
-All ingest endpoints accept multipart/form-data with a "file" field and return the extracted
-text or description. The result can then be passed to /api/v1/query/ with the appropriate input_type.
+All ingest endpoints accept multipart/form-data. For `/api/v1/ingest/audio/`, clients can provide a direct media `file` upload or a media `url` (via Form or JSON on `/api/v1/ingest/audio/url`), with an optional 2-character language hint (e.g. `ur`, `en`, `hi`, `fa`, `pa`). Media duration is capped at a strict 25-minute limit (verified via ffprobe/yt-dlp pre-download and post-download). The resulting transcript is returned with input_type='voice' along with timestamped speech segments (`id`, `start`, `end`, `duration`, `text`).
 
 ### Multi-Modal Audio & Speech (TTS)
 

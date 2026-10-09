@@ -74,7 +74,33 @@ async def get_dynamic_voices(
     return mapped_voices, total_count
 
 
-def _get_kokoro_model(model_name: str, config: dict):
+VOICE_LANG_PREFIX_MAP = {
+    "a": "en-us",  # American English
+    "b": "en-gb",  # British English
+    "e": "es",     # Spanish
+    "f": "fr-fr",  # French
+    "h": "hi",     # Hindi
+    "i": "it",     # Italian
+    "j": "ja",     # Japanese
+    "p": "pt-br",  # Portuguese
+    "z": "cmn",    # Mandarin
+}
+
+
+def _resolve_kokoro_lang(voice: str, lang: str | None = None, default_lang: str | None = None) -> str:
+    """Infer the correct language code for Kokoro based on voice name prefix if not specified."""
+    if lang and lang.strip():
+        return lang.strip()
+    if default_lang and default_lang.strip():
+        return default_lang.strip()
+    if voice and len(voice) > 0:
+        first_char = voice[0].lower()
+        if first_char in VOICE_LANG_PREFIX_MAP:
+            return VOICE_LANG_PREFIX_MAP[first_char]
+    return "en-us"
+
+
+def _get_kokoro_model(model_name: str, config: dict | None = None):
     """Lazy load and cache Kokoro ONNX model instances dynamically based on DB config."""
     global _kokoro_instances
     if model_name in _kokoro_instances:
@@ -85,14 +111,22 @@ def _get_kokoro_model(model_name: str, config: dict):
     except ImportError as exc:
         raise RuntimeError("kokoro-onnx package is not installed on the server.") from exc
 
-    model_path = Path(config.get("model_path", "kokoro-v1_0.onnx"))
-    voices_path = Path(config.get("voices_path", "voices-v1_0.bin"))
+    config = config or {}
+    model_path_str = config.get("model_path") or settings.kokoro_model_path
+    voices_path_str = config.get("voices_path") or settings.kokoro_voices_path
+
+    model_path = Path(model_path_str)
+    voices_path = Path(voices_path_str)
 
     if not model_path.exists() or not voices_path.exists():
         raise FileNotFoundError(f"Kokoro ONNX model files missing: '{model_path}' or '{voices_path}'.")
 
     _kokoro_instances[model_name] = Kokoro(str(model_path), str(voices_path))
     return _kokoro_instances[model_name]
+
+
+# Alias for backward compatibility
+get_kokoro_model = _get_kokoro_model
 
 
 def split_text_into_chunks(text: str, max_chars: int = 400) -> list[str]:
@@ -124,12 +158,13 @@ def _generate_kokoro_local_cpu(text: str, voice: str, speed: float, lang: str, m
     """Synchronous CPU-bound audio generation for Kokoro Local."""
     import soundfile as sf
     kokoro = _get_kokoro_model(model_name, config)
+    resolved_lang = _resolve_kokoro_lang(voice, lang)
     chunks = split_text_into_chunks(text, max_chars=400)
     all_samples = []
     sample_rate = 24000
 
     for chunk in chunks:
-        samples, sr = kokoro.create(chunk, voice=voice, speed=speed, lang=lang)
+        samples, sr = kokoro.create(chunk, voice=voice, speed=speed, lang=resolved_lang)
         sample_rate = sr
         if len(samples) > 0:
             all_samples.append(samples)
@@ -143,9 +178,86 @@ def _generate_kokoro_local_cpu(text: str, voice: str, speed: float, lang: str, m
     return buf.getvalue(), sample_rate
 
 
-async def _generate_kokoro_live(text: str, voice: str, model_name: str, config: dict, url: str) -> tuple[bytes, str]:
-    """Fallback / Live generation for Kokoro via Replicate or similar."""
-    raise NotImplementedError("Kokoro live (Replicate) not fully implemented in dynamic handler yet.")
+async def _generate_kokoro_live(
+    text: str,
+    voice: str,
+    speed: float = 1.0,
+    lang: str = "en-us",
+    model_name: str = "kokoro-v1.0-live",
+    config: dict | None = None,
+    url: str | None = None,
+) -> tuple[bytes, str]:
+    """
+    Live generation for Kokoro via Replicate API (if token configured),
+    with graceful automatic fallback to local Kokoro ONNX engine.
+    """
+    import os
+    import httpx
+
+    config = config or {}
+    replicate_token = (
+        os.environ.get("REPLICATE_API_TOKEN")
+        or os.environ.get("REPLICATE_API_KEY")
+        or config.get("api_key")
+    )
+
+    if replicate_token:
+        try:
+            headers = {
+                "Authorization": f"Bearer {replicate_token}",
+                "Content-Type": "application/json",
+                "Prefer": "wait",
+            }
+            endpoint = url or "https://api.replicate.com/v1/models/hexgrad/kokoro-tts/predictions"
+            payload = {
+                "input": {
+                    "text": text,
+                    "voice": voice,
+                    "speed": speed,
+                }
+            }
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                res = await client.post(endpoint, json=payload, headers=headers)
+                if res.status_code in (200, 201):
+                    data = res.json()
+                    status = data.get("status")
+                    output = data.get("output")
+
+                    if status in ("starting", "processing"):
+                        poll_url = data.get("urls", {}).get("get")
+                        for _ in range(30):
+                            await asyncio.sleep(1.0)
+                            poll_res = await client.get(poll_url, headers=headers)
+                            poll_data = poll_res.json()
+                            if poll_data.get("status") == "succeeded":
+                                output = poll_data.get("output")
+                                break
+                            if poll_data.get("status") == "failed":
+                                raise RuntimeError(f"Replicate Kokoro generation failed: {poll_data.get('error')}")
+
+                    audio_url = output if isinstance(output, str) else (output[0] if isinstance(output, list) and output else None)
+                    if audio_url:
+                        audio_res = await client.get(audio_url)
+                        if audio_res.status_code == 200:
+                            return audio_res.content, "audio/wav"
+        except Exception as e:
+            logger.warning(
+                "Replicate Kokoro live generation failed (%s), falling back to local Kokoro ONNX: %s",
+                type(e).__name__,
+                e,
+            )
+
+    # Fallback to local Kokoro ONNX engine
+    wav_bytes, _ = await asyncio.to_thread(
+        _generate_kokoro_local_cpu,
+        text=text,
+        voice=voice,
+        speed=speed,
+        lang=lang,
+        model_name=model_name,
+        config=config,
+    )
+    return wav_bytes, "audio/wav"
 
 
 def pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 24000, num_channels: int = 1, sample_width: int = 2) -> bytes:
@@ -208,7 +320,6 @@ async def _generate_gemini_speech(
     import copy
 
     import httpx
-
     from app.db.database import AsyncSessionLocal
     from app.services.key_manager import (
         get_next_available_key,
@@ -374,9 +485,9 @@ def cache_voice_sample(voice: str, model: str, wav_bytes: bytes):
 
 
 async def generate_dynamic_speech(
-    db: AsyncSession,
     model_name: str,
     text: str,
+    db: AsyncSession | None = None,
     voice: str | None = None,
     lang: str | None = None,
     extra_params: dict | None = None,
@@ -392,10 +503,21 @@ async def generate_dynamic_speech(
     if not text or not text.strip():
         raise ValueError("Text cannot be empty.")
 
+    # Model lookup: short-lived session opened and closed before TTS call.
+    # This prevents holding an idle DB connection during the long TTS generation.
+    from app.db.database import AsyncSessionLocal
+
     stmt = select(TTSModel).where(TTSModel.name == model_name, TTSModel.is_active == True)
     if provider:
         stmt = stmt.where(TTSModel.provider.ilike(provider.strip()))
-    model = (await db.execute(stmt)).scalar_one_or_none()
+
+    if db is not None:
+        model = (await db.execute(stmt)).scalar_one_or_none()
+    else:
+        async with AsyncSessionLocal() as _db:
+            model = (await _db.execute(stmt)).scalar_one_or_none()
+    # _db closed here — no connection held during TTS generation
+
     if not model:
         raise ValueError(f"Model '{model_name}' not found")
 
@@ -421,9 +543,14 @@ async def generate_dynamic_speech(
             provider=provider_name,
         )
     elif provider_name == "kokoro":
+        target_speed = speed or (extra_params.get("speed") if extra_params else None) or model.default_speed or 1.0
+        target_lang = _resolve_kokoro_lang(
+            target_voice,
+            lang or (extra_params.get("lang") if extra_params else None),
+            model.default_lang,
+        )
+
         if model.is_local:
-            target_speed = speed or (extra_params.get("speed") if extra_params else None) or model.default_speed
-            target_lang = lang or (extra_params.get("lang") if extra_params else None) or model.default_lang
             wav_bytes, _ = await asyncio.to_thread(
                 _generate_kokoro_local_cpu,
                 text=text,
@@ -431,16 +558,18 @@ async def generate_dynamic_speech(
                 speed=target_speed,
                 lang=target_lang,
                 model_name=model_name,
-                config=model.provider_config
+                config=model.provider_config or {},
             )
             mime = "audio/wav"
         else:
             wav_bytes, mime = await _generate_kokoro_live(
                 text=text,
                 voice=target_voice,
+                speed=target_speed,
+                lang=target_lang,
                 model_name=model_name,
-                config=model.provider_config,
-                url=model.api_endpoint_url
+                config=model.provider_config or {},
+                url=model.api_endpoint_url,
             )
     else:
         raise ValueError(f"Unsupported provider: {provider_name}")
@@ -464,7 +593,12 @@ async def process_tts_job(
     extra_params: dict | None = None,
     provider: str | None = None,
 ):
-    """Background task to generate TTS, upload to B2, and update job status."""
+    """Background task to generate TTS, upload to B2, and update job status.
+
+    Uses short-lived DB sessions — one per DB operation — so the connection
+    is never held open during the long TTS generation + B2 upload phase.
+    """
+    import datetime
     import uuid
 
     from sqlalchemy import update
@@ -473,56 +607,65 @@ async def process_tts_job(
     from app.db.database import AsyncSessionLocal
     from app.models.db_models import TTSJob
     from app.services.media_extractor import get_b2_session
+    from app.services.voice_url_service import generate_audio_presigned_url
 
-    async with AsyncSessionLocal() as db:
-        try:
-            # Generate the audio (extra_params forwarded directly)
-            wav_bytes, _ = await generate_dynamic_speech(
-                db=db,
-                model_name=model_name,
-                text=text,
-                voice=voice,
-                lang=lang,
-                extra_params=extra_params,
-                is_sample_request=False,
-                provider=provider,
+    wav_bytes: bytes | None = None
+    audio_url: str | None = None
+
+    try:
+        # ── Stage 1: Generate audio (no DB connection held during TTS call) ──
+        # generate_dynamic_speech opens its own short session for model lookup
+        # then closes it before making the long Gemini/Kokoro API call.
+        wav_bytes, _ = await generate_dynamic_speech(
+            model_name=model_name,
+            text=text,
+            voice=voice,
+            lang=lang,
+            extra_params=extra_params,
+            is_sample_request=False,
+            provider=provider,
+        )
+        # No DB connection held during TTS generation
+
+        # ── Stage 2: Upload to B2 (no DB connection held) ────────────────────
+        filename = f"tts_{job_id}_{uuid.uuid4().hex[:8]}.wav"
+        object_key = f"tts_audio/{filename}"
+
+        session, b2_config = get_b2_session()
+        async with session.client("s3", endpoint_url=settings.b2_endpoint_url, config=b2_config) as s3:
+            await s3.put_object(
+                Bucket=settings.b2_bucket_name,
+                Key=object_key,
+                Body=wav_bytes,
+                ContentType="audio/wav",
             )
 
-            # Upload to B2
-            filename = f"tts_{job_id}_{uuid.uuid4().hex[:8]}.wav"
-            object_key = f"tts_audio/{filename}"
+        audio_url = await generate_audio_presigned_url(object_key)
 
-            session, b2_config = get_b2_session()
-            async with session.client('s3', endpoint_url=settings.b2_endpoint_url, config=b2_config) as s3:
-                await s3.put_object(
-                    Bucket=settings.b2_bucket_name,
-                    Key=object_key,
-                    Body=wav_bytes,
-                    ContentType="audio/wav"
+        # ── Stage 3: Write "completed" to DB (fresh short session) ───────────
+        async with AsyncSessionLocal() as db:
+            await db.execute(
+                update(TTSJob)
+                .where(TTSJob.job_id == job_id)
+                .values(
+                    status="completed",
+                    audio_url=audio_url,
+                    updated_at=datetime.datetime.now(datetime.UTC),
                 )
-
-            # Generate 7-day S3 pre-signed URL via dedicated voice_url_service
-            import datetime
-
-            from app.services.voice_url_service import generate_audio_presigned_url
-            audio_url = await generate_audio_presigned_url(object_key)
-            now_utc = datetime.datetime.now(datetime.UTC)
-
-            # Update Database
-            await db.execute(
-                update(TTSJob)
-                .where(TTSJob.job_id == job_id)
-                .values(status="completed", audio_url=audio_url, updated_at=now_utc)
             )
             await db.commit()
-            logger.info("TTS Job %s completed successfully with 7-day presigned URL.", job_id)
+        logger.info("TTS Job %s completed successfully with 7-day presigned URL.", job_id)
 
-        except Exception as e:
-            logger.error("TTS Job %s failed: %s", job_id, e, exc_info=True)
-            import datetime
-            await db.execute(
-                update(TTSJob)
-                .where(TTSJob.job_id == job_id)
-                .values(status="failed", updated_at=datetime.datetime.now(datetime.UTC))
-            )
-            await db.commit()
+    except Exception as e:
+        logger.error("TTS Job %s failed: %s", job_id, e, exc_info=True)
+        # ── Stage 4: Write "failed" to DB (always fresh session) ─────────────
+        try:
+            async with AsyncSessionLocal() as db:
+                await db.execute(
+                    update(TTSJob)
+                    .where(TTSJob.job_id == job_id)
+                    .values(status="failed", updated_at=datetime.datetime.now(datetime.UTC))
+                )
+                await db.commit()
+        except Exception as db_err:
+            logger.error("TTS Job %s — also failed to write 'failed' status: %s", job_id, db_err)

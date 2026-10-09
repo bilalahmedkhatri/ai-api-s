@@ -59,6 +59,11 @@ async def _upsert_model(session: AsyncSession, name: str, **kwargs) -> TTSModel:
         session.add(model)
         await session.flush()
         print(f"  + Created model: {name}")
+    else:
+        for k, v in kwargs.items():
+            setattr(model, k, v)
+        await session.flush()
+        print(f"  ~ Updated model: {name}")
     return model
 
 

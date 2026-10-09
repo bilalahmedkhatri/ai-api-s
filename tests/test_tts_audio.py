@@ -16,42 +16,38 @@ async def test_tts_request_schema_validation():
 
 
 @pytest.mark.asyncio
-async def test_tts_speech_endpoint_missing_model_files(monkeypatch):
-    """When ONNX model files are missing, returns 503 Service Unavailable."""
-    def mock_get_kokoro_missing():
+async def test_tts_speech_missing_model_files(monkeypatch):
+    """When ONNX model files are missing, raises FileNotFoundError."""
+    def mock_get_kokoro_missing(model_name, config=None):
         raise FileNotFoundError("Kokoro ONNX model files missing: 'missing.onnx'")
 
+    monkeypatch.setattr("app.services.tts_service._get_kokoro_model", mock_get_kokoro_missing)
     monkeypatch.setattr("app.services.tts_service.get_kokoro_model", mock_get_kokoro_missing)
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://testserver"
-    ) as ac:
-        resp = await ac.post(
-            "/api/v1/audio/speech",
-            json={"text": "Testing Kokoro TTS model", "voice": "af_sarah"},
+    
+    with pytest.raises(FileNotFoundError):
+        from app.services.tts_service import _generate_kokoro_local_cpu
+        _generate_kokoro_local_cpu(
+            text="Testing Kokoro", voice="af_sarah", speed=1.0, lang="en-us",
+            model_name="kokoro-v1.0-local", config={}
         )
-        assert resp.status_code in (503, 500)
-
-
 
 
 @pytest.mark.asyncio
-async def test_tts_speech_endpoint_success_mock():
-    """Mock Kokoro TTS service call to verify HTTP 200 WAV audio response structure."""
+async def test_tts_sample_endpoint_success_mock():
+    """Mock generate_dynamic_speech to verify HTTP 200 WAV audio response structure on /sample."""
     fake_wav_bytes = b"RIFF....WAVEfmt ....data...."
-    fake_sample_rate = 24000
 
-    async def mock_generate_speech(text, voice=None, speed=1.0, lang="en-us"):
-        return fake_wav_bytes, fake_sample_rate
+    async def mock_gen(*args, **kwargs):
+        return fake_wav_bytes, "audio/wav"
 
-    with patch("app.api.v1.audio.router.generate_speech", side_effect=mock_generate_speech):
+    with patch("app.api.v1.audio.router.generate_dynamic_speech", side_effect=mock_gen):
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://testserver"
         ) as ac:
-            resp = await ac.post(
-                "/api/v1/audio/speech",
-                json={"text": "Synthesize this text into Kokoro audio speech", "voice": "af_sarah", "speed": 1.0},
+            resp = await ac.get(
+                "/api/v1/audio/sample?model=kokoro-v1.0-live&voice=af_sarah"
             )
             assert resp.status_code == 200
-            assert resp.headers["content-type"] == "audio/wav"
-            assert resp.headers["x-sample-rate"] == "24000"
+            assert "audio/wav" in resp.headers["content-type"]
             assert resp.content == fake_wav_bytes
+
