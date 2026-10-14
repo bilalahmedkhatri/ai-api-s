@@ -14,6 +14,7 @@ COPY pyproject.toml uv.lock ./
 
 # Install production deps into an isolated prefix (no venv overhead in image)
 RUN uv pip install --system --no-cache -r pyproject.toml
+RUN python -m nltk.downloader -d /usr/local/share/nltk_data punkt_tab punkt
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 2 — runtime image
@@ -28,6 +29,7 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 # Copy installed Python packages from builder
 COPY --from=builder /usr/local/lib/python3.12 /usr/local/lib/python3.12
 COPY --from=builder /usr/local/bin /usr/local/bin
+COPY --from=builder /usr/local/share/nltk_data /usr/local/share/nltk_data
 
 WORKDIR /app
 

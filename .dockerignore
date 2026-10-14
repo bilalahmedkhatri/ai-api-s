@@ -1,0 +1,13 @@
+.git
+.antigravitycli
+.venv
+.env
+.env.*
+__pycache__
+**/__pycache__
+.pytest_cache
+.ruff_cache
+logs
+gateway.db
+gateway.db-*
+tests/.test-artifacts-*

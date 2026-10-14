@@ -151,6 +151,9 @@ activemq-data/
 
 # Environments
 .env
+.env.*
+!.env.example
+!.env.*.example
 .envrc
 .venv
 env/
@@ -237,3 +240,36 @@ logs/
 *.onnx
 *.bin
 
+# Local Remix admin app (excluded from this backend repository)
+/admin/
+
+# Runtime media and isolated test databases/artifacts
+/static/generated/
+/static/download/
+/tests/.test-artifacts-*/
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal
+
+# Generated local audio experiments; keep shipped static voice samples
+/*.wav
+/scripts/*.wav
+/Create_audio_admin_dashboard_*.jpg
+
+# Local editor, agent and operating-system state
+/.agents/
+/.codex/
+/.idea/
+/.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini

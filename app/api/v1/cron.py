@@ -24,7 +24,7 @@ def verify_cron_authorization(
 ) -> None:
     """Validate incoming cron request against settings.cron_secret if configured."""
     if not settings.cron_secret:
-        return
+        raise HTTPException(status_code=503, detail="Admin authorization is not configured")
 
     token = None
     auth_val = authorization or upstash_authorization

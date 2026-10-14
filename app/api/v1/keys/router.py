@@ -2,9 +2,7 @@
 
 import logging
 from datetime import datetime
-from fastapi import APIRouter, Depends, Header, HTTPException, status
-from pydantic import BaseModel, Field
-from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.api.v1.cron import verify_cron_authorization
 from app.db.database import get_db
 from app.services.api_key_service import (
@@ -14,12 +12,15 @@ from app.services.api_key_service import (
 )
 from app.services.key_manager import (
     add_provider_key,
-    list_provider_keys,
-    update_provider_key,
-    toggle_key,
     delete_provider_key,
+    list_provider_keys,
     reset_daily_counts,
+    toggle_key,
+    update_provider_key,
 )
+from fastapi import APIRouter, Depends, Header, HTTPException, status
+from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -28,11 +29,12 @@ router = APIRouter(prefix="/keys", tags=["Access API Keys Management"])
 
 class CreateKeyRequest(BaseModel):
     client_name: str = Field(..., min_length=2, max_length=128, description="Third-party app/website name")
-    allowed_domain: str | None = Field(default=None, description="Domain constraint e.g. client.com (optional)")
+    authorized_app_id: int = Field(..., gt=0)
 
 
 class CreateKeyResponse(BaseModel):
     id: int
+    authorized_app_id: int
     raw_key: str = Field(..., description="Raw secret API Key. Store securely — displayed ONLY ONCE!")
     key_prefix: str
     client_name: str
@@ -43,6 +45,7 @@ class CreateKeyResponse(BaseModel):
 
 class KeyListItem(BaseModel):
     id: int
+    authorized_app_id: int | None
     key_prefix: str
     client_name: str
     allowed_domain: str | None
@@ -70,11 +73,15 @@ async def create_key_endpoint(
         cron_secret_header=cron_secret_header,
         cron_secret_env_header=cron_secret_env_header,
     )
-    raw_key, record = await generate_api_key(
-        db, client_name=req.client_name, allowed_domain=req.allowed_domain
-    )
+    try:
+        raw_key, record = await generate_api_key(
+            db, client_name=req.client_name, authorized_app_id=req.authorized_app_id
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     return CreateKeyResponse(
         id=record.id,
+        authorized_app_id=record.authorized_app_id,
         raw_key=raw_key,
         key_prefix=record.key_prefix,
         client_name=record.client_name,
@@ -103,6 +110,7 @@ async def list_keys_endpoint(
     return [
         KeyListItem(
             id=r.id,
+            authorized_app_id=r.authorized_app_id,
             key_prefix=r.key_prefix,
             client_name=r.client_name,
             allowed_domain=r.allowed_domain,

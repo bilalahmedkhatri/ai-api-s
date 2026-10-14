@@ -4,9 +4,12 @@ import datetime
 import hashlib
 import logging
 import secrets
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models.db_models import AccessAPIKey
+
+from app.models.db_models import AccessAPIKey, AuthorizedApp, User
+from app.services.app_access_service import normalize_origin
 
 logger = logging.getLogger(__name__)
 
@@ -21,23 +24,27 @@ def hash_key(raw_key: str) -> str:
 async def generate_api_key(
     db: AsyncSession,
     client_name: str,
-    allowed_domain: str | None = None,
+    authorized_app_id: int,
 ) -> tuple[str, AccessAPIKey]:
     """
     Generate a new API key for a third-party client application.
     Returns (raw_secret_key, db_record). The raw_secret_key should be displayed ONCE to the user.
     """
+    app = await db.get(AuthorizedApp, authorized_app_id)
+    if app is None:
+        raise ValueError("Authorized app not found")
+    owner = await db.get(User, app.owner_user_id)
+    if not app.is_active or not app.is_approved or not owner or not owner.is_active or not owner.api_access_enabled:
+        raise ValueError("App and its gateway owner must have API permission before issuing a key")
     raw_token = secrets.token_urlsafe(32)
     raw_key = f"gw_live_{raw_token}"
     key_prefix = raw_key[:KEY_PREFIX_LENGTH]
     hashed = hash_key(raw_key)
 
-    # Clean domain if provided
-    domain = allowed_domain.strip().lower() if allowed_domain and allowed_domain.strip() else None
-
     api_key_record = AccessAPIKey(
         client_name=client_name.strip(),
-        allowed_domain=domain,
+        authorized_app_id=app.id,
+        allowed_domain=app.allowed_origin,
         key_prefix=key_prefix,
         hashed_key=hashed,
         is_active=True,
@@ -59,13 +66,25 @@ async def verify_api_key(
     Verify a raw API key against the database.
     If valid and active, updates last_used_at timestamp and returns the AccessAPIKey record.
     """
-    if not raw_key or not raw_key.strip():
+    if not raw_key or not raw_key.strip() or not origin_domain:
+        return None
+
+    try:
+        origin = normalize_origin(origin_domain)
+    except ValueError:
         return None
 
     hashed = hash_key(raw_key.strip())
-    stmt = select(AccessAPIKey).where(
+    stmt = select(AccessAPIKey).join(
+        AuthorizedApp, AccessAPIKey.authorized_app_id == AuthorizedApp.id
+    ).join(User, AuthorizedApp.owner_user_id == User.id).where(
         AccessAPIKey.hashed_key == hashed,
-        AccessAPIKey.is_active == True,
+        AccessAPIKey.is_active.is_(True),
+        AuthorizedApp.allowed_origin == origin,
+        AuthorizedApp.is_active.is_(True),
+        AuthorizedApp.is_approved.is_(True),
+        User.is_active.is_(True),
+        User.api_access_enabled.is_(True),
     )
     result = await db.execute(stmt)
     record = result.scalar_one_or_none()
@@ -74,22 +93,8 @@ async def verify_api_key(
         logger.warning("API key verification failed: Key not found or inactive")
         return None
 
-    # Domain restriction check if record.allowed_domain is configured (and not "*")
-    if record.allowed_domain and record.allowed_domain != "*":
-        if not origin_domain:
-            logger.warning("API key domain mismatch: Key requires domain '%s' but no Origin/Referer provided", record.allowed_domain)
-            return None
-        
-        # Strip protocol and port from origin domain for comparison
-        clean_origin = origin_domain.lower().replace("https://", "").replace("http://", "").split("/")[0].split(":")[0]
-        clean_allowed = record.allowed_domain.lower().replace("https://", "").replace("http://", "").split("/")[0].split(":")[0]
-
-        if clean_origin != clean_allowed and not clean_origin.endswith("." + clean_allowed):
-            logger.warning("API key domain mismatch: Allowed '%s', Got '%s'", clean_allowed, clean_origin)
-            return None
-
     # Update last_used_at
-    record.last_used_at = datetime.datetime.now(datetime.timezone.utc)
+    record.last_used_at = datetime.datetime.now(datetime.UTC)
     await db.commit()
 
     return record

@@ -97,6 +97,7 @@ async def renew_tts_audio_url(
     db: AsyncSession,
     job_id: str | None = None,
     url: str | None = None,
+    authorized_app_id: int | None = None,
 ) -> dict:
     """
     Renew a TTS audio pre-signed URL for 7 days.
@@ -109,9 +110,14 @@ async def renew_tts_audio_url(
     target_job: TTSJob | None = None
     target_object_key: str | None = None
 
+    def scoped(stmt):
+        return stmt.where(TTSJob.authorized_app_id == authorized_app_id) if authorized_app_id is not None else stmt
+
     if job_id:
-        result = await db.execute(select(TTSJob).where(TTSJob.job_id == job_id.strip()))
+        result = await db.execute(scoped(select(TTSJob).where(TTSJob.job_id == job_id.strip())))
         target_job = result.scalar_one_or_none()
+        if not target_job:
+            raise ValueError("Job not found")
 
     if not target_job and url:
         target_object_key = extract_object_key_from_url(url)
@@ -120,18 +126,19 @@ async def renew_tts_audio_url(
             uuid_match = re.search(r"tts_([a-f0-9\-]{36})_", target_object_key)
             if uuid_match:
                 extracted_job_id = uuid_match.group(1)
-                result = await db.execute(select(TTSJob).where(TTSJob.job_id == extracted_job_id))
+                result = await db.execute(scoped(select(TTSJob).where(TTSJob.job_id == extracted_job_id)))
                 target_job = result.scalar_one_or_none()
 
             # If still not found, search by audio_url containing the object key
             if not target_job:
                 result = await db.execute(
-                    select(TTSJob).where(TTSJob.audio_url.ilike(f"%{target_object_key}%"))
+                    scoped(select(TTSJob).where(TTSJob.object_key == target_object_key))
                 )
                 target_job = result.scalar_one_or_none()
 
-    if target_job:
-        target_object_key = extract_object_key_from_url(target_job.audio_url) or target_object_key
+    if not target_job or target_job.status != "completed":
+        raise ValueError("Completed job not found")
+    target_object_key = target_job.object_key or extract_object_key_from_url(target_job.audio_url)
 
     if not target_object_key:
         raise ValueError("Could not determine Backblaze object key for the given audio.")
@@ -166,7 +173,8 @@ async def ensure_valid_audio_url(job: TTSJob, db: AsyncSession) -> str:
         return ""
 
     if is_presigned_url_expired(job.audio_url):
-        renewed = await renew_tts_audio_url(db=db, job_id=job.job_id, url=job.audio_url)
+        renewed = await renew_tts_audio_url(db=db, job_id=job.job_id, url=job.audio_url,
+                                          authorized_app_id=job.authorized_app_id)
         return renewed["audio_url"]
 
     return job.audio_url

@@ -61,6 +61,10 @@ async def callback(
     Validates state (CSRF), exchanges code for user info, upserts User row,
     issues JWT cookie, then redirects to the frontend.
     """
+    if state and state.startswith("dashboard."):
+        from app.api.v1.dashboard.router import oauth_callback
+        return await oauth_callback(request, code, state, error, db)
+
     if error:
         logger.warning("Google OAuth2 error: %s", error)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Google OAuth error: {error}")

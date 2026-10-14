@@ -1,19 +1,27 @@
 """app/api/v1/audio/router.py — Dynamic Audio Text-to-Speech (TTS) endpoints."""
 
+import json
 import logging
 import socket
+import uuid
+from dataclasses import asdict
 
 from app.api.v1.audio.schemas import DynamicTTSRequest, RenewAudioUrlRequest
 from app.core.auth import get_current_api_key
 from app.db.database import get_db
-from app.models.db_models import AccessAPIKey
+from app.models.db_models import AccessAPIKey, TTSChunk, TTSJob
+from app.services.tts.constants import GEMINI_CHUNK_MAX_CHARS, KOKORO_CHUNK_MAX_CHARS
+from app.services.tts.generator import _ModelInfo
+from app.services.tts.jobs import _now, lease_deadline
+from app.services.tts.text_utils import split_text_into_chunks
 from app.services.tts_service import (
     generate_dynamic_speech,
     get_dynamic_tts_models,
     get_dynamic_voices,
 )
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
 from fastapi.responses import JSONResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
@@ -54,7 +62,6 @@ async def list_models_endpoint(db: AsyncSession = Depends(get_db)):
         ) from exc
 
 
-from fastapi import Query
 
 
 @router.get("/voices", summary="List voices for a specific model")
@@ -142,9 +149,6 @@ async def get_sample_endpoint(
         ) from exc
 
 
-import uuid
-
-from fastapi import BackgroundTasks
 
 
 @router.post(
@@ -168,7 +172,7 @@ async def generate_tts_endpoint(
     from sqlalchemy import select
 
     # 1. Validate model exists and is active in DB
-    stmt = select(TTSModel).where(TTSModel.name == req.model, TTSModel.is_active == True)
+    stmt = select(TTSModel).where(TTSModel.name == req.model, TTSModel.is_active.is_(True))
     if req.provider:
         stmt = stmt.where(TTSModel.provider.ilike(req.provider.strip()))
     model_obj = (await db.execute(stmt)).scalar_one_or_none()
@@ -178,8 +182,24 @@ async def generate_tts_endpoint(
             detail=f"Model '{req.model}' not found"
         )
 
+    provider_name = model_obj.provider.lower()
+    if provider_name not in {'gemini', 'kokoro'}:
+        raise HTTPException(400, "Unsupported TTS provider")
+    if not req.text.strip():
+        raise HTTPException(400, "Text cannot be empty")
+    app_id = _app_id(api_key)
     try:
         job_id = str(uuid.uuid4())
+        token = uuid.uuid4().hex
+        snapshot = asdict(_ModelInfo(
+            name=model_obj.name, provider=model_obj.provider, is_local=bool(model_obj.is_local),
+            api_endpoint_url=model_obj.api_endpoint_url, provider_config=model_obj.provider_config or {},
+            default_voice=model_obj.default_voice, default_speed=model_obj.default_speed,
+            default_lang=model_obj.default_lang,
+        ))
+        generation = {"model_snapshot": snapshot, "voice": req.voice or model_obj.default_voice,
+                      "lang": req.lang, "speed": req.speed, "extra_params": req.extra_params}
+        limit = GEMINI_CHUNK_MAX_CHARS if provider_name == 'gemini' else KOKORO_CHUNK_MAX_CHARS
 
         # Save pending job to DB
         job_title = req.title or req.text[:100]
@@ -188,9 +208,13 @@ async def generate_tts_endpoint(
             title=job_title,
             text=req.text,
             status="processing",
-            audio_url=None
+            audio_url=None, authorized_app_id=app_id, generation_json=json.dumps(generation),
+            run_token=token, lease_until=lease_deadline(),
         )
         db.add(new_job)
+        await db.flush()
+        for index, chunk in enumerate(split_text_into_chunks(req.text, limit)):
+            db.add(TTSChunk(job_id=job_id, chunk_index=index, text=chunk, status="pending", attempts=0))
         await db.commit()
 
         # Trigger background processing
@@ -198,12 +222,7 @@ async def generate_tts_endpoint(
         background_tasks.add_task(
             process_tts_job,
             job_id=job_id,
-            model_name=req.model,
-            text=req.text,
-            voice=req.voice,
-            lang=req.lang,
-            extra_params=req.extra_params,
-            provider=model_obj.provider,
+            run_token=token,
         )
 
         return {
@@ -237,7 +256,7 @@ async def get_tts_status_endpoint(
     from app.models.db_models import TTSJob
     from sqlalchemy import select
 
-    result = await db.execute(select(TTSJob).where(TTSJob.job_id == job_id))
+    result = await db.execute(select(TTSJob).where(TTSJob.job_id == job_id, TTSJob.authorized_app_id == _app_id(api_key)))
     job = result.scalar_one_or_none()
 
     if not job:
@@ -251,7 +270,14 @@ async def get_tts_status_endpoint(
         "title": job.title,
         "status": job.status,
         "audio_url": valid_audio_url,
+        "duration_seconds": job.duration_sec,
+        "size_bytes": job.size_bytes,
+        "generation_time_sec": round((job.updated_at - job.created_at).total_seconds(), 1)
+        if job.status == 'completed' and job.updated_at and job.created_at else None,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+        "error": job.error_message,
+        "chunks": await _chunk_status(db, job_id),
+        "retry_available": _retryable(job),
     }
 
 
@@ -278,7 +304,7 @@ async def renew_tts_audio_url_endpoint(
         )
 
     try:
-        result = await renew_tts_audio_url(db=db, job_id=req.job_id, url=req.url)
+        result = await renew_tts_audio_url(db=db, job_id=req.job_id, url=req.url, authorized_app_id=_app_id(api_key))
         return result
     except ValueError as err:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(err)) from err
@@ -288,3 +314,69 @@ async def renew_tts_audio_url_endpoint(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to renew audio URL: {str(exc)}"
         ) from exc
+
+
+def _app_id(api_key):
+    app_id = getattr(api_key, 'authorized_app_id', None)
+    if not app_id:
+        raise HTTPException(403, "App ownership is required")
+    return app_id
+
+
+def _retryable(job):
+    if not job.generation_json or job.status == 'completed':
+        return False
+    if job.status == 'failed' or job.lease_until is None:
+        return True
+    deadline = job.lease_until
+    if deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=_now().tzinfo)
+    return deadline < _now()
+
+
+async def _chunk_status(db, job_id):
+    rows = (await db.execute(select(TTSChunk).where(TTSChunk.job_id == job_id)
+                            .order_by(TTSChunk.chunk_index))).scalars().all()
+    return {"total": len(rows), "completed": sum(c.status == 'completed' for c in rows),
+            "failed": sum(c.status == 'failed' for c in rows),
+            "items": [{"index": c.chunk_index, "status": c.status,
+                       "attempts": c.attempts, "error": c.error_message} for c in rows]}
+
+
+@router.post('/tts/retry/{job_id}', summary="Resume a failed or abandoned app-owned job", status_code=202)
+async def retry_tts_endpoint(job_id: str, background_tasks: BackgroundTasks,
+                             api_key: AccessAPIKey = Depends(get_current_api_key),
+                             db: AsyncSession = Depends(get_db)):
+    app_id = _app_id(api_key)
+    job = (await db.execute(select(TTSJob).where(
+        TTSJob.job_id == job_id, TTSJob.authorized_app_id == app_id,
+    ))).scalar_one_or_none()
+    if not job:
+        raise HTTPException(404, 'Job not found')
+    if not _retryable(job):
+        raise HTTPException(409, 'Job is completed, still running, or has no retry settings')
+    from app.services.tts.jobs import claim_retry
+    token = await claim_retry(db, job_id, app_id)
+    if not token:
+        raise HTTPException(409, 'Another worker already claimed this job')
+    from app.services.tts_service import process_tts_job
+    background_tasks.add_task(process_tts_job, job_id=job_id, run_token=token)
+    return {"job_id": job_id, "status": "processing", "audio_url": None}
+
+
+@router.get('/tts/stream/{job_id}', summary="Listen to indexed chunks as they become ready")
+async def stream_tts_endpoint(job_id: str, after: int = Query(0, ge=0),
+                              api_key: AccessAPIKey = Depends(get_current_api_key),
+                              db: AsyncSession = Depends(get_db)):
+    from app.services.tts.streaming import stream_chunks
+    from fastapi.responses import StreamingResponse
+    app_id = _app_id(api_key)
+    job = (await db.execute(select(TTSJob).where(
+        TTSJob.job_id == job_id, TTSJob.authorized_app_id == app_id,
+    ))).scalar_one_or_none()
+    if not job:
+        raise HTTPException(404, 'Job not found')
+    # Release the auth/lookup transaction before the long response starts.
+    await db.commit()
+    return StreamingResponse(stream_chunks(job_id, app_id, after), media_type='application/x-ndjson',
+                             headers={'Cache-Control': 'private, no-store', 'X-Accel-Buffering': 'no'})

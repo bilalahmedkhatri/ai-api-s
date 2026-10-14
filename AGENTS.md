@@ -1,9 +1,41 @@
 # AI Gateway - Complete System Reference
 
 > **Project:** AIModels_SearchAPIS
-> **Runtime:** Python 3.12+ - FastAPI - SQLite (WAL) - Upstash Redis
+> **Runtime:** Python 3.12+ - FastAPI - PostgreSQL / SQLite (WAL) - Upstash Redis
 > **Package Manager:** uv
-> **Test Suite:** 46 tests across 5 phases - all passing
+> **Test Suite:** TTS concurrency/library correction: 117 isolated backend tests passed, covering bounded same-key concurrency, environment/DB key distribution, interrupted-worker recovery, safe orphan cleanup and 50k scripts; older/full-suite counts below are historical. See TTS_TESTING.md.
+
+## App authorization and ownership rules
+
+- Gateway owners belong exclusively to this service's `users` table. Never map a frontend user ID into `owner_user_id`.
+- Every protected app endpoint must use `get_current_api_key`: active app-bound key, exact registered origin, active/approved app, active owner with `api_access_enabled`, and matching method/route permission.
+- Origin headers are claims, not proof of identity. The server-side app secret authenticates the app. Never expose keys in browser bundles, URLs, logs or documentation.
+- Facebook connections and publishing are scoped by `authorized_app_id`. Reconnect legacy unassigned tokens; never assign them automatically or accept a caller-supplied backend owner.
+- App authorization does not replace the frontend's own session and per-user ownership checks. TTS job creation/status/retry/URL renewal are app-scoped. Legacy unassigned TTS jobs fail closed; extracted media still requires future app-level isolation.
+- Use `scripts/bootstrap_genzee_apps.py` for repeatable GenZee setup. Validate the existing Google owner and registered route templates before changing permissions. Reuse app registrations and saved active keys; reject conflicting origin ownership.
+- Authorization revision: `a71c942e106b`; live-preview head: `f53c9e012d74` after checkpoint revision `e42b8d901c63`. Run regressions with isolated databases and mocked providers, never against configured production data.
+- Read [APP_ACCESS.md](APP_ACCESS.md) for provisioning, current registration metadata, revocation and deployment requirements.
+
+## Unified TTS implementation (2026-10-13)
+
+- Use `app.services.tts_service` as the canonical public facade for samples and background jobs. It re-exports modular implementations and must never contain a second provider or job implementation.
+- `app.services.tts.tts_service` remains only as a compatibility import path. Provider changes belong in `app/services/tts/`.
+- Gemini's shared policy is 3 retries / 4 attempts per chunk, capped backoff with jitter, transient 5xx/network retries, DB key rotation on 429 and header-based provider credentials. Chunk limits are Gemini 2,500 / Kokoro 400 characters. Never strip the requested voice configuration on HTTP 400.
+- Long scripts use request-schema validation; do not reintroduce a smaller hardcoded generator-only limit.
+- Background jobs use `tts/jobs.py` for result metadata, persisted failure reason and configured webhook delivery. Test both actual API paths with isolated SQL and fake providers/storage/webhooks.
+- Completed TTS status exposes stored duration_seconds and size_bytes along with the final URL; frontend Library completion sync depends on both fields. Preserve app-scoped authorization on metadata access.
+- Indexed checkpoints and selective retry are now implemented in `tts/jobs.py`; see [TTS_CHECKPOINTS.md](TTS_CHECKPOINTS.md). Creation saves app ownership, model/settings snapshots and chunks atomically. Never infer legacy ownership.
+- Use fenced worker tokens and renewable leases for every checkpoint/final write. Retry must be an atomic claim, must reuse successful checkpoints, and must reject foreign/unassigned jobs. Only delete chunk audio after the final completed result commits.
+- Default process-wide chunk concurrency is Gemini 2/Kokoro 1, with 0.5-second Gemini request-start pacing derived from constants (environment override wins). Gemini cycles eligible DB keys under a process lock; same-key requests use `TTS_GEMINI_KEY_CONCURRENCY` (default 2; set 1 for strict serialization). DB-empty fallback cycles distinct `GEMINI_API_KEYS`, falling back to `GEMINI_API_KEY`. Other key-manager callers keep priority-first behavior. These are not distributed provider/project rate limits; keep one worker until shared limiting exists. Log provider response and complete chunk elapsed times without credentials or input text.
+- Migration `f53c9e012d74` adds nullable checkpoint frame counts. The existing migration script validates parent/owner and appends the streaming grant without issuing keys. `tts/streaming.py` emits only the next contiguous chunk; after cleanup it reconstructs previews from the final WAV using frame counts. Older completed jobs without frame metadata still have their final audio, but cannot reconstruct previews.
+- NLTK English Punkt plus Unicode punctuation handles oversized paragraphs. Install `punkt_tab` and `punkt` before deployment; Docker includes them. No tokenizer downloads in requests. Missing data falls back to the existing splitter with a warning.
+- Reuse the root JSONL logger: seal at 1,000 entries, rename with UTC first/last record timestamps plus content hash, and upload to private B2 `logs/YYYY/MM/`. Retain failed uploads locally. Keep one writer process; partial batches seal on clean shutdown/recovery.
+- Prefer the smallest tested change using existing helpers; re-check references before deleting code. `tts/maintenance.py` uses existing rows/leases and the shared atomic retry claim. Recover only expired processing jobs with approved apps, active API-enabled owners and creation permission; never auto-retry quota/failed jobs or guess legacy ownership.
+- Maintenance scans every 30 seconds and schedules at most two recovered jobs. Hourly cleanup only considers old temporary WAVs, preserving incomplete-job checkpoints and active run prefixes. Default age is 24 hours and at least twice the lease. Never sweep final audio. Production logs need persistent storage; compose already mounts `./logs:/app/logs` and uses one worker. Docker context excludes local secrets, environments, logs and databases.
+- Shared distributed limits, sample-by-sample delivery and memory-bounded final merge remain future scaling work; real-provider/B2 testing is separate from mocked regressions. See [TTS_TESTING.md](TTS_TESTING.md).
+- Prior unification verification on 2026-10-13: 60 tests across `test_tts_unified.py`, `test_tts_audio.py` and `test_app_authorization.py` passed, plus changed-module Ruff and compilation. Full-suite execution in the Windows sandbox stalled at asyncio's internal socket initialization; only these audited, isolated suites were run outside it with approved execution.
+
+- Checkpoint verification (2026-10-13): 84 targeted isolated regressions passed, including ordered merge, selective retry, foreign/legacy job denial, overlapping retry, worker fencing, heartbeat loss, invalid/missing audio, presign/upload/cleanup failure and SQLite migration upgrade/downgrade. Configured PostgreSQL migration/schema and both exact-origin retry grants were verified. Full suite and live synthesis/storage/deployment were not run.
 
 ---
 
@@ -214,6 +246,18 @@ AIModels_SearchAPIS/
 |   |   |-- model_router.py         # 30B+ routing matrix + call_llm()
 |   |   |-- search_aggregator.py    # Tavily + Brave + DuckDuckGo clients
 |   |   |-- embedding.py            # litellm.embedding() wrapper (lazy-cached)
+|   |   |-- tts_service.py          # Backward-compatible TTS facade
+|   |   |-- tts/                    # Modular TTS Subsystem
+|   |       |-- constants.py        # Timeouts, retries, character limits, sample dirs
+|   |       |-- text_utils.py       # Multi-language text chunking (Latin, Hindi, Urdu, Chinese)
+|   |       |-- audio_utils.py      # PCM/WAV conversions, WAV merge, duration & size extraction
+|   |       |-- sample_cache.py     # Voice sample local cache & path traversal guard
+|   |       |-- catalog.py          # Dynamic models & voices DB queries
+|   |       |-- gemini_provider.py  # Gemini TTS provider with retry & key rotation
+|   |       |-- kokoro_provider.py  # Kokoro ONNX local CPU & Replicate live fallback
+|   |       |-- generator.py        # Central dynamic TTS speech dispatcher
+|   |       |-- jobs.py             # BackgroundTasks job orchestrator (B2 upload + status)
+|   |       |-- notifier.py         # HMAC-SHA256 signed webhook notification to frontend
 |   |
 |   |-- search/                     # Search engine module stubs (user-extended)
 |   |   |-- tavily_search.py
@@ -406,6 +450,23 @@ The system has two independent cache layers:
 }
 ```
 
+### Table: tts_jobs
+
+| Column | Type | Description |
+|---|---|---|
+| id | INTEGER PK | Auto-increment primary key |
+| job_id | VARCHAR(64) indexed | Unique UUID identifier for the background TTS job |
+| title | VARCHAR(255) | Optional user title or first 100 characters of text |
+| text | TEXT | Complete text to synthesize |
+| status | VARCHAR(32) | Current status (`processing`, `completed`, `failed`) |
+| audio_url | TEXT | Active pre-signed URL or direct link to generated audio |
+| object_key | VARCHAR(512) | Backblaze B2 / S3 object key (e.g. `tts_audio/tts_...wav`) |
+| duration_sec | FLOAT | Duration of generated audio in seconds |
+| size_bytes | INTEGER | Size of generated WAV file in bytes |
+| error_message | VARCHAR(500) | Detailed error message if the job fails |
+| created_at | DATETIME(TZ) | Creation timestamp |
+| updated_at | DATETIME(TZ) | Last update timestamp |
+
 ---
 
 ## 9. API Endpoints Reference
@@ -484,10 +545,12 @@ All ingest endpoints accept multipart/form-data. For `/api/v1/ingest/audio/`, cl
 
 | Method | Path | Request Format | Description / Model |
 |---|---|---|---|
-| POST | /api/v1/audio/gemini-tts | JSON `{"text": "...", "voice": "Puck"}` | Synthesizes WAV audio from text using Gemini 3.6 Flash |
-| GET | /api/v1/audio/gemini-voices | Query Params: None | Returns full metadata & sample URLs for all 9 prebuilt voices |
-| GET | /api/v1/audio/gemini-sample | Query Params: `?voice=Puck` | Streams direct WAV preview sample audio for any selected voice |
-| POST | /api/v1/audio/speech | JSON `{"text": "...", "voice": "af_sarah"}` | Synthesizes WAV audio locally using Kokoro-82M ONNX |
+| GET | /api/v1/audio/models | None | Lists all active TTS models registered in DB (Gemini, Kokoro, etc.) |
+| GET | /api/v1/audio/voices | Query: `?model=...&search=...&limit=10&offset=0` | Paginated & searchable voice list for requested model |
+| GET | /api/v1/audio/sample | Query: `?model=...&voice=...` | Streams cached or on-demand WAV sample audio preview |
+| POST | /api/v1/audio/tts | JSON `DynamicTTSRequest` (`model`, `text`, `voice`, `lang`, `title`, etc.) | Triggers background TTS job; returns `job_id` |
+| GET | /api/v1/audio/tts/status/{job_id} | Path: `job_id` | Checks status, returns pre-signed audio URL & timestamps |
+| POST | /api/v1/audio/tts/renew-url | JSON `{"job_id": "..."}` or `{"url": "..."}` | Renews expired Backblaze B2 7-day pre-signed URL |
 
 ### Async Media Extractor
 
@@ -558,6 +621,16 @@ ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8080
 LITESTREAM_ACCESS_KEY_ID=...
 LITESTREAM_SECRET_ACCESS_KEY=...
 LITESTREAM_S3_BUCKET=my-gateway-backups
+
+# Backblaze B2 (Audio and Media Storage)
+B2_BUCKET_NAME=my-bucket
+B2_APPLICATION_KEY_ID=...
+B2_APPLICATION_KEY=...
+B2_ENDPOINT_URL=https://s3.us-east-005.backblazeb2.com
+
+# Frontend Webhook (TTS Background Job Notifications)
+FRONTEND_WEBHOOK_URL=https://myfrontend.com/api/tts/webhook
+FRONTEND_WEBHOOK_SECRET=your-webhook-secret
 ```
 
 ---
@@ -800,3 +873,8 @@ See MODELS.md for the full Standard Operating Procedure. Summary:
 ---
 
 *Last updated: 2026-08-13 | Built across 5 development phases | 46 automated tests passing*
+
+
+## Dashboard backend ownership
+
+The Remix admin now uses backend-owned Google OAuth, memberships, permissions, sessions, verified access_requests, email_challenges, service_credentials and audit_logs through /api/v1/dashboard. Dashboard membership IDs never identify gateway owners. Dashboard approval is independent of users.api_access_enabled. Existing app API dependencies remain unchanged. Migration head for this dashboard extension is c93d5e71ab20, following a71c942e106b. Bootstrap an explicitly approved administrator with python -m scripts.bootstrap_dashboard and DASHBOARD_BOOTSTRAP_EMAIL. Deployment configuration and legacy frontend SQLite retirement are documented in admin/README.md. Regression tests use isolated databases and mocked Google, SMTP and HTTP providers.

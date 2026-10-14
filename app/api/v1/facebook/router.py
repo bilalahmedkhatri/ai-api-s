@@ -7,9 +7,10 @@ from app.api.v1.facebook.schemas import (
     TokenStoreRequest,
     TokenStoreResponse,
 )
+from app.core.auth import get_current_api_key
 from app.core.encryption import decrypt_token, encrypt_token
 from app.db.database import get_db
-from app.models.db_models import FacebookPageToken
+from app.models.db_models import AccessAPIKey, AuthorizedApp, FacebookPageToken
 from app.services.facebook_client import facebook_client
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from sqlalchemy import select
@@ -39,6 +40,7 @@ class ButtonType(StrEnum):
 async def store_page_token(
     request: TokenStoreRequest,
     db: AsyncSession = Depends(get_db),
+    api_key: AccessAPIKey = Depends(get_current_api_key),
 ):
     """Store an encrypted Facebook Page access token."""
     try:
@@ -46,17 +48,25 @@ async def store_page_token(
         page_info = await facebook_client.get_page_info(request.page_id, request.access_token)
 
         # Check if already exists
-        stmt = select(FacebookPageToken).where(FacebookPageToken.page_id == request.page_id)
+        app = await db.get(AuthorizedApp, api_key.authorized_app_id)
+        stmt = select(FacebookPageToken).where(
+            FacebookPageToken.page_id == request.page_id,
+            FacebookPageToken.authorized_app_id == api_key.authorized_app_id,
+        )
         result = await db.execute(stmt)
         token_record = result.scalars().first()
 
         encrypted = encrypt_token(request.access_token)
 
         if token_record:
+            token_record.is_active = True
+            token_record.user_id = app.owner_user_id
             token_record.encrypted_token = encrypted
             token_record.page_name = request.page_name or page_info.get("name")
         else:
             token_record = FacebookPageToken(
+                authorized_app_id=app.id,
+                user_id=app.owner_user_id,
                 page_id=request.page_id,
                 page_name=request.page_name or page_info.get("name"),
                 encrypted_token=encrypted,
@@ -83,6 +93,7 @@ async def post_to_page(
     button_link: str | None = Form(None, description="URL for the CTA button (required when button_type is set)"),
     media: UploadFile | None = None,
     db: AsyncSession = Depends(get_db),
+    api_key: AccessAPIKey = Depends(get_current_api_key),
 ):
     """
     Publish a post to a Facebook Page.
@@ -92,6 +103,7 @@ async def post_to_page(
     # Retrieve stored token
     stmt = select(FacebookPageToken).where(
         FacebookPageToken.page_id == page_id,
+        FacebookPageToken.authorized_app_id == api_key.authorized_app_id,
         FacebookPageToken.is_active == True,  # noqa: E712
     )
     result = await db.execute(stmt)
@@ -160,9 +172,31 @@ async def post_to_page(
         raise
     except httpx.HTTPStatusError as e:
         logger.error(f"Failed to publish to Facebook: {e.response.text}")
-        error_msg = e.response.json().get("error", {}).get("message", "Unknown Facebook Error")
+        error = e.response.json().get("error", {})
+        if error.get("code") == 190:
+            token_record.is_active = False
+            await db.commit()
+            raise HTTPException(status_code=401, detail="Facebook connection expired or revoked. Reconnect this page.") from e
+        error_msg = error.get("message", "Unknown Facebook Error")
         raise HTTPException(status_code=400, detail=f"Facebook API Error: {error_msg}") from e
     except Exception as e:
         logger.error(f"Error publishing post: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error") from e
+
+
+@router.delete("/pages/{page_id}")
+async def disconnect_page(
+    page_id: str,
+    db: AsyncSession = Depends(get_db),
+    api_key: AccessAPIKey = Depends(get_current_api_key),
+):
+    record = (await db.execute(select(FacebookPageToken).where(
+        FacebookPageToken.page_id == page_id,
+        FacebookPageToken.authorized_app_id == api_key.authorized_app_id,
+    ))).scalar_one_or_none()
+    if not record:
+        raise HTTPException(404, "Page connection not found for this app")
+    record.is_active = False
+    await db.commit()
+    return {"status": "success", "message": "Page disconnected"}
 

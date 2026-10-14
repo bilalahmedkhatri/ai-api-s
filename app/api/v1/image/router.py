@@ -3,14 +3,13 @@
 import logging
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.image.schemas import ImageGenerateRequest, ImageGenerateResponse
-from app.core.auth import get_current_api_key
-from app.core.user_auth import get_optional_user
+from app.core.middleware import limiter
 from app.db.database import get_db
-from app.models.db_models import AccessAPIKey, MediaGeneration, User
+from app.models.db_models import MediaGeneration
 from app.services.media_gen_service import generate_media, get_media_models
 
 logger = logging.getLogger(__name__)
@@ -24,37 +23,27 @@ async def list_image_models(db: AsyncSession = Depends(get_db)):
     return {"models": models}
 
 
-from app.core.middleware import limiter
-
 @router.post("/generate", response_model=ImageGenerateResponse, summary="Generate image(s)")
 @limiter.limit("10/minute")
 async def generate_image_endpoint(
     request: Request,
     body: ImageGenerateRequest,
     db: AsyncSession = Depends(get_db),
-    user: User | None = Depends(get_optional_user),
-    api_key: AccessAPIKey | None = Depends(get_current_api_key),
 ):
     """
     Generate an image using the specified model.
-    Requires either a valid session cookie OR a valid X-API-Key.
+    Requires the central authorized-app check; audit ownership comes from the app.
     """
-    if not user and not api_key:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required. Use a session cookie or provide an X-API-Key header.",
-        )
+    user_id = request.state.authorized_app.owner_user_id
 
-    user_id = user.id if user else None
-    
     # We resolve the model ID later inside the service, but we need it for the audit log here.
     # To keep things clean, we'll fetch the model config first.
     from app.services.media_gen_service import get_media_model
     try:
         model = await get_media_model(body.model, db)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-        
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
     if model.media_type != "image":
         raise HTTPException(status_code=400, detail=f"Model '{body.model}' is not an image model.")
 
@@ -87,25 +76,25 @@ async def generate_image_endpoint(
             num_outputs=body.num_outputs,
             extra_params=body.extra_params,
         )
-        
+
         # Update audit on success
         import json
         audit.result_urls = json.dumps(urls)
         audit.status = "success"
-        
+
     except TimeoutError as e:
         audit.status = "timeout"
         audit.error_message = str(e)
         logger.error(f"Image generation timeout: {e}")
         await db.commit()
-        raise HTTPException(status_code=504, detail="Generation timed out.")
-        
+        raise HTTPException(status_code=504, detail="Generation timed out.") from e
+
     except Exception as e:
         audit.status = "failed"
         audit.error_message = str(e)
         logger.error("Image generation failed", exc_info=True)
         await db.commit()
-        raise HTTPException(status_code=500, detail=f"Generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Generation failed: {e}") from e
 
     finally:
         elapsed = (datetime.now(UTC) - start_time).total_seconds() * 1000

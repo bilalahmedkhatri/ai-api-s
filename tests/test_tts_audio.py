@@ -21,11 +21,11 @@ async def test_tts_speech_missing_model_files(monkeypatch):
     def mock_get_kokoro_missing(model_name, config=None):
         raise FileNotFoundError("Kokoro ONNX model files missing: 'missing.onnx'")
 
-    monkeypatch.setattr("app.services.tts_service._get_kokoro_model", mock_get_kokoro_missing)
-    monkeypatch.setattr("app.services.tts_service.get_kokoro_model", mock_get_kokoro_missing)
+    monkeypatch.setattr("app.services.tts.kokoro_provider._get_kokoro_model", mock_get_kokoro_missing)
+    monkeypatch.setattr("app.services.tts.kokoro_provider.get_kokoro_model", mock_get_kokoro_missing)
     
     with pytest.raises(FileNotFoundError):
-        from app.services.tts_service import _generate_kokoro_local_cpu
+        from app.services.tts.kokoro_provider import _generate_kokoro_local_cpu
         _generate_kokoro_local_cpu(
             text="Testing Kokoro", voice="af_sarah", speed=1.0, lang="en-us",
             model_name="kokoro-v1.0-local", config={}

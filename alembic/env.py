@@ -9,7 +9,8 @@ from alembic import context
 
 # ── project imports ──────────────────────────────────────────────────────────
 from app.core.config import settings
-from app.models.db_models import Base  # noqa: F401 — registers all ORM models
+import app.models.dashboard  # noqa: F401
+from app.models.db_models import Base  # noqa: F401 - registers all ORM models
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

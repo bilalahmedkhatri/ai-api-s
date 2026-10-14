@@ -165,10 +165,10 @@ async def reset_daily_counts(db: AsyncSession, provider: str | None = None) -> i
 # Key rotation logic
 # ---------------------------------------------------------------------------
 
-async def get_next_available_key(db: AsyncSession, provider: str) -> tuple[int, str] | None:
+async def get_next_available_key(db: AsyncSession, provider: str, after_id: int | None = None) -> tuple[int, str] | None:
     """
-    Returns (key_id, plain_api_key) of the highest-priority available key
-    for the given provider. Returns None if no usable key exists.
+    Returns (key_id, plain_api_key) of an available key. Priority-first by default;
+    TTS supplies after_id to cycle eligible IDs. None means no usable key exists.
 
     A key is 'available' when:
       - is_active = True
@@ -183,6 +183,9 @@ async def get_next_available_key(db: AsyncSession, provider: str) -> tuple[int, 
         .order_by(ProviderAPIKey.priority.asc())
     )
     keys = result.scalars().all()
+    if after_id is not None:
+        # TTS cycles eligible keys; other callers keep priority-first behavior.
+        keys = sorted(keys, key=lambda k: (k.id <= after_id, k.id))
 
     for k in keys:
         if k.is_within_limit:

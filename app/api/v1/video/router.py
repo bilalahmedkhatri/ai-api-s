@@ -3,14 +3,13 @@
 import logging
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.video.schemas import VideoGenerateRequest, VideoGenerateResponse
-from app.core.auth import get_current_api_key
-from app.core.user_auth import get_optional_user
+from app.core.middleware import limiter
 from app.db.database import get_db
-from app.models.db_models import AccessAPIKey, MediaGeneration, User
+from app.models.db_models import MediaGeneration
 from app.services.media_gen_service import generate_media, get_media_models
 
 logger = logging.getLogger(__name__)
@@ -24,35 +23,25 @@ async def list_video_models(db: AsyncSession = Depends(get_db)):
     return {"models": models}
 
 
-from app.core.middleware import limiter
-
 @router.post("/generate", response_model=VideoGenerateResponse, summary="Generate video")
 @limiter.limit("3/minute")
 async def generate_video_endpoint(
     request: Request,
     body: VideoGenerateRequest,
     db: AsyncSession = Depends(get_db),
-    user: User | None = Depends(get_optional_user),
-    api_key: AccessAPIKey | None = Depends(get_current_api_key),
 ):
     """
     Generate a video using the specified model.
-    Requires either a valid session cookie OR a valid X-API-Key.
+    Requires the central authorized-app check; audit ownership comes from the app.
     """
-    if not user and not api_key:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required. Use a session cookie or provide an X-API-Key header.",
-        )
+    user_id = request.state.authorized_app.owner_user_id
 
-    user_id = user.id if user else None
-    
     from app.services.media_gen_service import get_media_model
     try:
         model = await get_media_model(body.model, db)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-        
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
     if model.media_type != "video":
         raise HTTPException(status_code=400, detail=f"Model '{body.model}' is not a video model.")
 
@@ -93,25 +82,25 @@ async def generate_video_endpoint(
             num_outputs=body.num_outputs,
             extra_params=extra_params,
         )
-        
+
         # Update audit on success
         import json
         audit.result_urls = json.dumps(urls)
         audit.status = "success"
-        
+
     except TimeoutError as e:
         audit.status = "timeout"
         audit.error_message = str(e)
         logger.error(f"Video generation timeout: {e}")
         await db.commit()
-        raise HTTPException(status_code=504, detail="Generation timed out.")
-        
+        raise HTTPException(status_code=504, detail="Generation timed out.") from e
+
     except Exception as e:
         audit.status = "failed"
         audit.error_message = str(e)
         logger.error("Video generation failed", exc_info=True)
         await db.commit()
-        raise HTTPException(status_code=500, detail=f"Generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Generation failed: {e}") from e
 
     finally:
         elapsed = (datetime.now(UTC) - start_time).total_seconds() * 1000

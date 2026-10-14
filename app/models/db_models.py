@@ -140,6 +140,9 @@ class AccessAPIKey(Base):
     __tablename__ = "access_apikey"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    authorized_app_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("authorized_apps.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     client_name: Mapped[str] = mapped_column(String(128), nullable=False)
     allowed_domain: Mapped[str | None] = mapped_column(String(255), nullable=True)
     key_prefix: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
@@ -220,6 +223,7 @@ class User(Base):
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    api_access_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -233,6 +237,25 @@ class User(Base):
 
 
 # â”€â”€ Dynamic Media Generation (Image + Video) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+class AuthorizedApp(Base):
+    """An approved client owned exclusively by a gateway User."""
+
+    __tablename__ = "authorized_apps"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner_user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    allowed_origin: Mapped[str] = mapped_column(String(512), nullable=False, index=True)
+    allowed_endpoints_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_approved: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
 
 class MediaModel(Base):
     """Dynamic provider configuration for image or video generation models."""
@@ -341,10 +364,13 @@ class FacebookPageToken(Base):
 
     __tablename__ = "facebook_page_tokens"
     __table_args__ = (
-        UniqueConstraint("user_id", "page_id", name="uq_user_page"),
+        UniqueConstraint("authorized_app_id", "page_id", name="uq_app_facebook_page"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    authorized_app_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("authorized_apps.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     user_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
     )
@@ -387,12 +413,36 @@ class TTSJob(Base):
     text: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="processing", nullable=False)
     audio_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    object_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    duration_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    authorized_app_id: Mapped[int | None] = mapped_column(ForeignKey("authorized_apps.id"), index=True)
+    generation_json: Mapped[str | None] = mapped_column(Text)
+    run_token: Mapped[str | None] = mapped_column(String(64))
+    lease_until: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     updated_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), onupdate=func.now(), nullable=True
     )
+
+
+class TTSChunk(Base):
+    """Stable, zero-based checkpoint. Audio is private B2 storage, never a public URL."""
+
+    __tablename__ = "tts_chunks"
+    __table_args__ = (UniqueConstraint("job_id", "chunk_index", name="uq_tts_chunk_index"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("tts_jobs.job_id", ondelete="CASCADE"), index=True)
+    chunk_index: Mapped[int] = mapped_column(Integer)
+    frame_count: Mapped[int | None] = mapped_column(Integer)
+    text: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    object_key: Mapped[str | None] = mapped_column(String(512))
+    error_message: Mapped[str | None] = mapped_column(String(500))
 
 
 class ProviderAPIKey(Base):

@@ -1,15 +1,15 @@
 """Core application configuration using Pydantic v2 BaseSettings."""
 
 import os
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from dotenv import load_dotenv
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.services.tts.constants import GEMINI_INTER_CHUNK_DELAY
+
 load_dotenv()
-
-
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 
 class Settings(BaseSettings):
@@ -75,6 +75,13 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
     workers: int = 1
+    tts_gemini_concurrency: int = Field(default=2, ge=1, le=8)
+    tts_gemini_key_concurrency: int = Field(default=2, ge=1, le=8)
+    tts_kokoro_concurrency: int = Field(default=1, ge=1, le=4)
+    tts_lease_seconds: int = Field(default=1200, ge=180, le=7200)
+    tts_gemini_request_interval: float = Field(default=GEMINI_INTER_CHUNK_DELAY, ge=0, le=60)
+    tts_recovery_interval: int = Field(default=30, ge=5, le=300)
+    tts_orphan_age_seconds: int = Field(default=86400, ge=14400)
 
     # Models — override in .env
     embedding_model: str = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-small")   # any litellm embedding model
@@ -125,7 +132,7 @@ class Settings(BaseSettings):
     # Cron security token — set CRON_SECRET in .env to secure trigger endpoints
     cron_secret: str | None = os.environ.get("CRON_SECRET")
 
-    # API Key requirement toggle for gateway query endpoints (default False)
+    # Legacy config retained for compatibility; it cannot disable app authorization.
     require_api_key_for_query: bool = os.environ.get("REQUIRE_API_KEY_FOR_QUERY", "false").lower() in ("true", "1", "yes")
 
     # Kokoro Audio TTS settings
@@ -152,6 +159,11 @@ class Settings(BaseSettings):
 
     # Generated media local storage directory
     generated_media_dir: str = os.environ.get("GENERATED_MEDIA_DIR", "static/generated")
+
+    # TTS job webhook — notify frontend on job completion/failure
+    # Set FRONTEND_WEBHOOK_URL in .env to enable; leave blank to disable silently.
+    frontend_webhook_url: str | None = os.environ.get("FRONTEND_WEBHOOK_URL")
+    frontend_webhook_secret: str | None = os.environ.get("FRONTEND_WEBHOOK_SECRET")
 
 
 settings = Settings()
