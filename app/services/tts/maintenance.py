@@ -10,7 +10,9 @@ from sqlalchemy import or_, select
 from app.core.config import settings
 from app.db.database import AsyncSessionLocal
 from app.models.db_models import AuthorizedApp, TTSChunk, TTSJob, User
+from app.services.api_key_service import customer_project_active
 from app.services.media_extractor import get_b2_session
+from app.services.tts.availability import is_local_kokoro
 from app.services.tts.jobs import _now, claim_retry, process_tts_job
 
 logger = logging.getLogger(__name__)
@@ -26,6 +28,8 @@ async def recover_expired(capacity=2):
             User.is_active.is_(True), User.api_access_enabled.is_(True),
         ).order_by(TTSJob.created_at).limit(capacity))).scalars().all()
         for job in rows:
+            if not await customer_project_active(db, job.authorized_app_id):
+                continue
             # Respect revoked creation permission and reject invalid legacy snapshots.
             try:
                 app = await db.get(AuthorizedApp, job.authorized_app_id)
@@ -33,6 +37,8 @@ async def recover_expired(capacity=2):
                     continue
                 generation = json.loads(job.generation_json)
                 model = generation.get('model_snapshot', {})
+                if is_local_kokoro(model.get('provider'), model.get('is_local')):
+                    continue
                 if not {'voice', 'lang', 'speed', 'extra_params'} <= generation.keys() or not generation.get('voice'):
                     continue
                 if not model.get('name') or model.get('provider', '').lower() not in {'gemini', 'kokoro'}:

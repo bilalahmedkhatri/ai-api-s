@@ -1,9 +1,34 @@
 # AI Gateway - Complete System Reference
 
 > **Project:** AIModels_SearchAPIS
-> **Runtime:** Python 3.12+ - FastAPI - PostgreSQL / SQLite (WAL) - Upstash Redis
+> **Runtime:** Python 3.14+ - FastAPI - PostgreSQL / SQLite (WAL) - Upstash Redis
 > **Package Manager:** uv
-> **Test Suite:** TTS concurrency/library correction: 117 isolated backend tests passed, covering bounded same-key concurrency, environment/DB key distribution, interrupted-worker recovery, safe orphan cleanup and 50k scripts; older/full-suite counts below are historical. See TTS_TESTING.md.
+> **Latest validation (2026-10-18):** 333 isolated backend tests passed after dependency cleanup; retained-library imports and offline lockfile consistency passed. Older counts below are historical, not current totals.
+
+## Lightweight gateway status (2026-10-18)
+
+- Removed gateway dependencies: `openai-whisper`, `kokoro-onnx`, `gradio-client`.
+  `pyproject.toml` and `uv.lock` are updated; the gateway environment was synced.
+  The lockfile pruned 36 package entries without upgrading retained versions.
+- Retained: SoundFile, explicit NumPy (`numpy>=2.4.6`), LiteLLM, NLTK and the
+  B2 SDKs (`aioboto3`, `boto3`, `botocore`). NumPy still powers semantic routing.
+- Removed routes: `POST /api/v1/ingest/audio/` and
+  `POST /api/v1/ingest/audio/url`; both return 404 and are absent from OpenAPI.
+- Local Kokoro is hidden from the public model/voice catalog and rejected before
+  new jobs, sample cache access, manual retries and automatic recovery. Existing
+  DB rows and job snapshots were preserved; do not rewrite ownership or history.
+- Gemini and remote Kokoro remain supported. Existing B2 audio, job status,
+  streaming and signed-URL renewal remain available through their authorized flows.
+- Original Whisper/Kokoro/OmniVoice sources and Kokoro assets live in
+  `D:/voice_generator_free/falai/{whisper,kokoro,omnivoice}`. Workers require their
+  own environments; no worker transport or fal.ai deployment exists yet. Do not
+  import sibling checkout files or restore local inference on the gateway.
+- Verification after dependency cleanup: **333 isolated backend tests passed**;
+  gateway/retained-library imports and `uv lock --check --offline` passed.
+  Providers/storage were mocked; hosted Linux RAM, real synthesis and production
+  deployment were not verified. No Git push or deployment was performed.
+
+See [INFERENCE_RELOCATION.md](INFERENCE_RELOCATION.md) for scope and worker boundaries.
 
 ## App authorization and ownership rules
 
@@ -16,7 +41,29 @@
 - Authorization revision: `a71c942e106b`; live-preview head: `f53c9e012d74` after checkpoint revision `e42b8d901c63`. Run regressions with isolated databases and mocked providers, never against configured production data.
 - Read [APP_ACCESS.md](APP_ACCESS.md) for provisioning, current registration metadata, revocation and deployment requirements.
 
+## Query reliability
+
+- Reuse existing Query/FinalResponse metadata and model usage upserts; no extra table or migration for recovery. Maintenance runs on lifespan startup and every 30 seconds with bounded batches, rotates deferred accounting rows, and never retries interrupted generation. Recovered failed records cannot be billed or cached. Cache hits correctly use zero new provider calls.
+- Admin-only /requests uses shared UI and server-only Remix loaders. Both dashboard query-requests APIs require require_admin independently; app history remains app-scoped and legacy/unverified rows unassigned. No secret headers or rejected bodies may be stored. Test isolated SQLite transactions, concurrent replay, deadlines, ownership, admin authorization and frontend loaders; distinguish these from production/provider verification.
+
+## Provider-key allocation
+
+- Query medium fixes: processing cancellation must finalize as cancelled (internal classification 499), never completed; use shielded cleanup. All error finalization updates request and final metadata consistently. History filters read canonical Query.meta status, including cancelled. The query maintenance loop marks processing rows older than 10 minutes failed without reissuing provider calls; enforce the 180-second processing deadline. Direct greeting/thanks responses and fresh explicitly UTC time use zero chat tokens; time bypasses both caches. Weather/pricing/news/person lookups require search-backed async LLM; absent search results return an uncached unavailable answer without a chat call. Exclude old placeholders and failed/cancelled records from DB caches. DB and Redis hits must preserve model/intent/engine and copy normalized search sources into the new request history. Failed/cancelled/cache requests never add user token usage.
+
+
+- Query request history: reuse Query.authorized_app_id plus existing query/final/search tables and metadata. POST persists ownership and request ID/key ID before processing; cache hits and sanitized failures must remain auditable. GET /api/v1/query/requests and /requests/{query_id} require normal exact endpoint grants, enforce app ownership in SQL, paginate and use no-store. Never assign legacy NULL-owner queries. Cache keys and DB cache lookups must be app-scoped; cache hits cost zero new chat usage. Track chat/embedding/search provider calls using request-local telemetry; available failed usage is provider-only. Unknown costs stay null and make total_provider_cost_usd null; expose known subtotal and coverage separately. Optional account-specific search per-call settings must not be guessed. Never call estimates a full provider invoice. Daily usage labels use app:<id>. Unauthorized/validation POST query failures receive sanitized rejected audit rows, omit bodies, and retain NULL ownership unless the key was verified; middleware logs remain the database-outage fallback. Migration d920f41a672e was applied and verified on the configured database on 2026-10-16 after explicit approval; only app ID 3 gained the two read grants, unrelated grants and legacy NULL ownership were preserved. Deploy/restart the backend separately; the schema migration does not deploy routes. Regression tests must stay isolated.
+
+- Query provider I/O: `call_llm` awaits LiteLLM `acompletion`; semantic `embed` awaits `aembedding`. The shared chat router selects active `ai_models` whose local LiteLLM metadata declares chat mode (unknown capabilities fail closed), using preferred/free/lowest-price/ID ordering for the first candidate and inserting the active DB Replicate-hosted `replicate/openai/gpt-4o-mini` immediately second when there are multiple candidates. Exclude OpenRouter from this query flow. For this explicitly selected hosted GPT, reuse known base GPT chat metadata; do not broaden unknown-model capability acceptance. Cap actual provider calls at four after atomic key eligibility/reservation; missing keys do not consume that call budget, and later candidates must remain reachable. Use the row's provider with existing get_next_available_key; never silently fall back to environment keys. Provider retries are disabled; selected DB models are tried explicitly. Query I/O reserves the provider slot through get_next_available_key(reserve=True) using a conditional atomic UPDATE. mark_key_used(reserved=True) updates last-use without incrementing twice; 429 reuses mark_key_quota_exceeded. Other callers keep existing defaults. Never release a failed attempt into user token accounting: provider-request quota and user token charges are separate. User record_model_usage runs only after successful request/final-response persistence, with atomic daily upserts. Bookkeeping failures must preserve the successful answer and durable model/tokens/cost; persist usage_accounting_status=pending when available. Pending reconciliation runs every 30 seconds; atomically commit the query compare-and-set recorded marker and usage upsert together, using the original UTC request date. Never split those commits or charge failed/cache/cancelled requests. No token charge for failed attempts or failed requests, regardless of provider usage. Lifetime allocation total_count remains claim-endpoint-only; the query reservation is a database-atomic daily slot, not a provider RPM or distributed concurrency limiter. Persist sanitized attempt statuses/types/timings and successful actual model/tokens in FinalResponse metadata. Failed generations return 503 and cannot be reused from DB/Redis caches; no-cache bypasses both layers. Never persist exception text or credentials. The separate synchronous vision helper is not part of this query flow.
+
+- Deferred customer-key work (do not implement until requested): (1) replace automatic grants of all available app endpoints with plan-based endpoint permissions and per-user usage quotas; (2) enforce an active-key count limit. Existing issuance rate limiting is not a usage quota or active-key cap. Keep current generation, ownership and revocation intact while these controls remain deferred.
+
+- Reuse the admin-protected `POST /api/v1/keys/provider/{provider}/claim` and `key_manager.claim_provider_keys` for explicit server-to-server key allocations. Return only raw key strings with no-store; never log secrets or accept ordinary app/customer keys as admin authority.
+- Select at most two active, under-quota provider rows, ordered by lifetime total_count, requests_today, priority, newest ID. Selection/increments are a single UPDATE; PostgreSQL locks and skips busy rows. Decrypt before commit and roll back corrupt credentials. Daily resets must not clear total_count.
+- Counts represent reservations, not confirmed provider requests. Do not double-count a claim through mark_key_used, and do not silently wire existing TTS into claims. Migration c84f10d2a639 follows ab92d18e740c. Test only with isolated databases/fake credentials; separate PostgreSQL live concurrency from SQLite/SQL compilation evidence.
+
 ## Unified TTS implementation (2026-10-13)
+
+- Remote Kokoro uses the existing HTTP adapter. Local ONNX inference is removed from this gateway: `is_local` Kokoro is unavailable and `allow_local_fallback=true` cannot restore it. Do not enable local fallback here. Worker transport, submission retries and a generic worker adapter are not implemented.
 
 - Use `app.services.tts_service` as the canonical public facade for samples and background jobs. It re-exports modular implementations and must never contain a second provider or job implementation.
 - `app.services.tts.tts_service` remains only as a compatibility import path. Provider changes belong in `app/services/tts/`.
@@ -69,8 +116,8 @@ intelligent routing layer in front of multiple LLM providers, search engines, an
 
 | Capability | Implementation |
 |---|---|
-| Multi-modal input ingestion | Audio (Whisper STT), Image (GPT-4o Vision), Video (ffmpeg + Vision) |
-| Multi-modal audio synthesis (TTS) | Gemini 3.6 Flash TTS (9 Prebuilt Voices, Live Samples) + Kokoro ONNX local TTS |
+| Multi-modal input ingestion | Image (GPT-4o Vision), Video (ffmpeg + Vision); Whisper moved to worker sources |
+| Multi-modal audio synthesis (TTS) | DB-configured Gemini TTS + remote Kokoro; local Kokoro unavailable |
 | Hybrid intent routing | Regex rule engine + semantic cosine similarity classifier |
 | Search aggregation | Tavily (AI search), Brave Search, DuckDuckGo (free fallback) |
 | RAG pipeline | Search results injected as context into LLM prompt |
@@ -96,7 +143,7 @@ intelligent routing layer in front of multiple LLM providers, search engines, an
 |  |  RequestIDMiddleware  +  CORS  +  Sentry FastAPI Plugin    |  |
 |  +------------------------------------------------------------+  |
 |                                                                  |
-|   /api/v1/ingest/audio   -->  Whisper STT  --> text pipeline    |
+|   Whisper transcription --> relocated worker source (not served) |
 |   /api/v1/ingest/image   -->  GPT-4o Vision description         |
 |   /api/v1/ingest/video   -->  ffmpeg frames + GPT-4o Vision     |
 |   /api/v1/query/         -->  Full 8-stage pipeline (below)     |
@@ -231,7 +278,6 @@ AIModels_SearchAPIS/
 |   |       |-- router.py           # All /api/v1/* routes aggregated
 |   |       |-- health.py           # GET /api/v1/health/ (DB + Upstash deep check)
 |   |       |-- ingest/
-|   |       |   |-- audio.py        # POST /api/v1/ingest/audio/ (Whisper STT)
 |   |       |   |-- image.py        # POST /api/v1/ingest/image/ (Vision LLM)
 |   |       |   |-- video.py        # POST /api/v1/ingest/video/ (ffmpeg + Vision)
 |   |       |   |-- schemas.py      # IngestResponse Pydantic models
@@ -254,7 +300,7 @@ AIModels_SearchAPIS/
 |   |       |-- sample_cache.py     # Voice sample local cache & path traversal guard
 |   |       |-- catalog.py          # Dynamic models & voices DB queries
 |   |       |-- gemini_provider.py  # Gemini TTS provider with retry & key rotation
-|   |       |-- kokoro_provider.py  # Kokoro ONNX local CPU & Replicate live fallback
+|   |       |-- kokoro_provider.py  # Remote Kokoro HTTP; local calls reject
 |   |       |-- generator.py        # Central dynamic TTS speech dispatcher
 |   |       |-- jobs.py             # BackgroundTasks job orchestrator (B2 upload + status)
 |   |       |-- notifier.py         # HMAC-SHA256 signed webhook notification to frontend
@@ -308,14 +354,16 @@ Override via EMBEDDING_MODEL env var. Any litellm-compatible embedding model wor
 
 ### 5.3 Multi-Modal Models
 
-| Input/Output Type | Model | Provider | Endpoint |
+| Input/Output Type | Model selection | Provider | Endpoint |
 |---|---|---|---|
-| Audio (STT Ingestion) | openai/whisper-1 | OpenAI Whisper | /api/v1/ingest/audio/ |
-| Audio (TTS Synthesis) | gemini-3.6-flash | Google AI Studio | /api/v1/audio/gemini-tts |
-| Voice List & Samples | gemini-3.6-flash | Google AI Studio | /api/v1/audio/gemini-voices, /api/v1/audio/gemini-sample |
-| Local TTS Synthesis | Kokoro-82M ONNX | Local ONNX Runtime | /api/v1/audio/speech |
-| Image (Vision) | gpt-4o | OpenAI | /api/v1/ingest/image/ |
-| Video (frames + Vision) | gpt-4o | OpenAI via litellm | /api/v1/ingest/video/ |
+| TTS synthesis | Active DB model | Gemini / remote Kokoro | `/api/v1/audio/tts` |
+| Voice list and samples | Active available DB model | Gemini / remote Kokoro | `/api/v1/audio/voices`, `/api/v1/audio/sample` |
+| Image vision | Configured vision model | Existing vision adapter | `/api/v1/ingest/image/` |
+| Video frames and vision | Configured vision model | FFmpeg + existing vision adapter | `/api/v1/ingest/video/` |
+
+Whisper transcription and local Kokoro are not served. Legacy provider-specific
+`/audio/gemini-tts`, `/audio/gemini-voices`, `/audio/gemini-sample` and `/audio/speech`
+examples are not the current API contract. Use the shared routes above and OpenAPI.
 
 ### 5.4 LiteLLM - The Abstraction Layer
 
@@ -332,7 +380,7 @@ All LLM calls go through LiteLLM (litellm>=1.96.0), which provides:
 | Provider | Purpose | Env Var |
 |---|---|---|
 | **Google AI Studio** | Gemini 3.6 Flash Audio Output & TTS | GEMINI_API_KEY |
-| **OpenAI** | Whisper STT, GPT-4o Vision, Embeddings | OPENAI_API_KEY |
+| **OpenAI** | Configured vision and embedding requests; no local Whisper STT | OPENAI_API_KEY |
 | **Groq** | Qwen-2.5-Coder-32B, Llama-3.3-70B, Llama-3.1-8B | GROQ_API_KEY |
 | **Cohere** | Command-R+ (RAG fallback) | COHERE_API_KEY |
 | **OpenRouter** | Nemotron-550B free tier (last-resort fallback) | OPENROUTER_API_KEY |
@@ -535,17 +583,16 @@ Response:
 
 | Method | Path | Accepted Formats | Model |
 |---|---|---|---|
-| POST | /api/v1/ingest/audio/ | Audio: .wav, .mp3, .ogg, .flac, .m4a, .aac, .wma / Video: .mp4, .mov, .avi, .mkv, .webm, etc. | OpenAI Whisper |
 | POST | /api/v1/ingest/image/ | .jpg, .jpeg, .png, .gif, .webp | GPT-4o Vision |
 | POST | /api/v1/ingest/video/ | .mp4, .avi, .mov, .mkv, .webm | ffmpeg + GPT-4o Vision |
 
-All ingest endpoints accept multipart/form-data. For `/api/v1/ingest/audio/`, clients can provide a direct media `file` upload or a media `url` (via Form or JSON on `/api/v1/ingest/audio/url`), with an optional 2-character language hint (e.g. `ur`, `en`, `hi`, `fa`, `pa`). Media duration is capped at a strict 25-minute limit (verified via ffprobe/yt-dlp pre-download and post-download). The resulting transcript is returned with input_type='voice' along with timestamped speech segments (`id`, `start`, `end`, `duration`, `text`).
+Image/video ingestion accepts multipart/form-data. Whisper file/URL transcription is preserved in the separate worker source directory; neither audio ingestion route is registered in this gateway. Video keyframe analysis does not require Whisper.
 
 ### Multi-Modal Audio & Speech (TTS)
 
 | Method | Path | Request Format | Description / Model |
 |---|---|---|---|
-| GET | /api/v1/audio/models | None | Lists all active TTS models registered in DB (Gemini, Kokoro, etc.) |
+| GET | /api/v1/audio/models | None | Lists available active TTS models; excludes local Kokoro |
 | GET | /api/v1/audio/voices | Query: `?model=...&search=...&limit=10&offset=0` | Paginated & searchable voice list for requested model |
 | GET | /api/v1/audio/sample | Query: `?model=...&voice=...` | Streams cached or on-demand WAV sample audio preview |
 | POST | /api/v1/audio/tts | JSON `DynamicTTSRequest` (`model`, `text`, `voice`, `lang`, `title`, etc.) | Triggers background TTS job; returns `job_id` |
@@ -703,6 +750,8 @@ Returns HTTP 200 with status=degraded if Upstash is unreachable (cache is non-cr
 
 ### Docker Multi-Stage Build
 
+The current Dockerfile and CI configuration still target Python 3.12, while `pyproject.toml` and `.python-version` require 3.14. These legacy deployment paths need alignment before use; the 333-test validation used the local Python 3.14 environment and does not validate Docker/CI deployment.
+
 Stage 1 (builder): python:3.12-slim + uv - installs all production dependencies
 Stage 2 (runtime): python:3.12-slim + system ffmpeg + litestream binary
 
@@ -786,8 +835,8 @@ Steps:
 # Install uv package manager
 pip install uv
 
-# Install all project dependencies
-uv sync --all-groups
+# Install locked project dependencies (Python 3.14+)
+uv sync --locked --all-groups
 
 # Set up environment variables
 cp .env.example .env
@@ -825,8 +874,8 @@ uv run alembic upgrade head
 ## 15. Testing
 
 ```bash
-# Run all 46 tests
-uv run pytest
+# Run the backend regression suite with locked dependencies
+uv run --locked pytest tests/
 
 # Verbose output with short tracebacks
 uv run pytest -v --tb=short
@@ -841,7 +890,7 @@ uv run ruff check app/ tests/
 uv run ruff format --check app/ tests/
 ```
 
-### Test Coverage by Phase
+### Historical initial-phase test coverage
 
 | File | Count | Coverage Area |
 |---|---|---|
@@ -865,7 +914,7 @@ See MODELS.md for the full Standard Operating Procedure. Summary:
 2. If a new 30B+ open model outperforms the current primary in its intent category:
    - Update the model string in app/services/model_router.py in the ROUTING_MATRIX dict
    - Verify the new model ID is available and active on Groq / OpenRouter / Cohere
-   - Run uv run pytest tests/ and confirm all 46 tests still pass
+   - Run uv run --locked pytest tests/ and resolve regressions in the current suite
    - Commit with message: chore(models): upgrade coding to <new-model-name>
 3. Keep the old model as position-1 in the fallbacks list for one sprint before removing it
 4. Rotate all API keys (Groq, OpenAI, Cohere, OpenRouter, Upstash) every 90 days via cloud dashboard

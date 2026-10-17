@@ -46,7 +46,8 @@ from app.services.dashboard import (
     require_admin,
 )
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi import Query as QueryParam
+from fastapi.responses import RedirectResponse, Response
 from jose import jwt
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select, update
@@ -54,6 +55,27 @@ from sqlalchemy import delete, func, select, update
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+
+
+@router.get("/query-requests")
+async def query_requests(response: Response, page: int = QueryParam(1, ge=1),
+                         page_size: int = QueryParam(20, ge=1, le=100),
+                         status: str | None = QueryParam(None, pattern="^(completed|failed|processing|cancelled|rejected)$"),
+                         m=Depends(member), db=Depends(get_db)):
+    from app.api.v1.query.router import request_page
+
+    require_admin(m)
+    response.headers["Cache-Control"] = "no-store"
+    return await request_page(db, [], page, page_size, status)
+
+
+@router.get("/query-requests/{query_id}")
+async def query_request_detail(query_id: int, response: Response, m=Depends(member), db=Depends(get_db)):
+    from app.api.v1.query.router import request_detail
+
+    require_admin(m)
+    response.headers["Cache-Control"] = "no-store"
+    return await request_detail(db, query_id, [])
 
 
 class Start(BaseModel):
@@ -424,14 +446,19 @@ async def activity(page: int = 1, m=Depends(member), db=Depends(get_db)):
 
 
 @router.get("/members")
-async def members(request: Request, m=Depends(member), db=Depends(get_db)):
+async def members(request: Request, response: Response, m=Depends(member), db=Depends(get_db)):
+    response.headers["Cache-Control"] = "no-store"
     require_admin(m)
     records = (await db.execute(select(Membership).order_by(Membership.id.desc()))).scalars().all()
     requests = (
         (await db.execute(select(AccessRequest).order_by(AccessRequest.id.desc()))).scalars().all()
     )
     return {
-        "users": [await dto(db, r) for r in records],
+        "users": [
+            {**await dto(db, r), "master_key": cipher().decrypt(r.master_key_encrypted.encode()).decode()
+             if r.master_key_encrypted else None}
+            for r in records
+        ],
         "requests": [
             {
                 "id": r.id,
@@ -512,6 +539,9 @@ async def invite(body: Invite, request: Request, m=Depends(member), db=Depends(g
         if not entry.email_verified:
             raise HTTPException(400, "Verify the request email before approval")
         entry.status, entry.reviewed_by, entry.reviewed_at = body.status, m.id, now()
+    if target.status == "approved":
+        from app.services.customer_keys import ensure_master_key
+        ensure_master_key(target)
     await audit(db, m, "INVITE_MEMBER", str(target.id))
     await db.commit()
     return await dto(db, target)
@@ -528,9 +558,19 @@ async def change(
     target = await db.get(Membership, identifier)
     if not target:
         raise HTTPException(404, "Member not found")
+    entry = (await db.execute(select(AccessRequest).where(
+        AccessRequest.email == target.email
+    ))).scalar_one_or_none()
+    if entry and entry.status == "pending" and body.status == "approved" and not entry.email_verified:
+        raise HTTPException(400, "Verify the request email before approval")
     await save_rules(body, request, db, target)
+    if entry and entry.status == "pending":
+        entry.status, entry.reviewed_by, entry.reviewed_at = body.status, m.id, now()
     target.role, target.status = body.role, body.status
     target.approved_by, target.approved_at = m.id, now() if body.status == "approved" else None
+    if target.status == "approved":
+        from app.services.customer_keys import ensure_master_key
+        ensure_master_key(target)
     target.permission_version += 1
     await db.execute(
         update(DashboardSession)

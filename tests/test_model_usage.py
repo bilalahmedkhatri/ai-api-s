@@ -1,12 +1,42 @@
 """Unit tests for AI Models registry and aggregated token usage tracking."""
 
 import datetime
-import pytest
-from sqlalchemy import select
 
+import pytest
 from app.db.database import AsyncSessionLocal, init_db
 from app.models.db_models import AIModel, ModelWebsiteUsage
 from app.services.usage_tracker import get_or_create_model, record_model_usage
+from sqlalchemy import select
+
+
+def test_concurrent_daily_accounting_uses_atomic_upsert(tmp_path):
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.models.db_models import Base
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from tests.test_app_authorization import AsyncAdapter
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'usage.db'}", connect_args={"timeout": 30})
+    Base.metadata.create_all(engine)
+    try:
+        with Session(engine) as session:
+            session.add(AIModel(name="known-chat", provider="openai"))
+            session.commit()
+
+        def record(_):
+            with Session(engine, expire_on_commit=False) as session:
+                asyncio.run(record_model_usage(AsyncAdapter(session), "known-chat", "app:1", 2, 1))
+
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            list(executor.map(record, range(24)))
+        with Session(engine) as session:
+            usage = session.scalars(select(ModelWebsiteUsage)).one()
+            assert (usage.total_requests, usage.prompt_tokens, usage.completion_tokens, usage.total_tokens) == (24, 48, 24, 72)
+    finally:
+        engine.dispose()
 
 
 @pytest.mark.asyncio

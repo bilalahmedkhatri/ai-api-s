@@ -1,10 +1,11 @@
 """tests/test_tts_audio.py — Unit tests for Kokoro TTS audio generation endpoints."""
 
 from unittest.mock import patch
+
 import pytest
+from app.api.v1.audio.schemas import TTSRequest
 from httpx import ASGITransport, AsyncClient
 from main import app
-from app.api.v1.audio.schemas import TTSRequest
 
 
 @pytest.mark.asyncio
@@ -13,23 +14,6 @@ async def test_tts_request_schema_validation():
     assert req.text == "Hello world"
     assert req.voice == "af_sarah"
     assert req.speed == 1.2
-
-
-@pytest.mark.asyncio
-async def test_tts_speech_missing_model_files(monkeypatch):
-    """When ONNX model files are missing, raises FileNotFoundError."""
-    def mock_get_kokoro_missing(model_name, config=None):
-        raise FileNotFoundError("Kokoro ONNX model files missing: 'missing.onnx'")
-
-    monkeypatch.setattr("app.services.tts.kokoro_provider._get_kokoro_model", mock_get_kokoro_missing)
-    monkeypatch.setattr("app.services.tts.kokoro_provider.get_kokoro_model", mock_get_kokoro_missing)
-    
-    with pytest.raises(FileNotFoundError):
-        from app.services.tts.kokoro_provider import _generate_kokoro_local_cpu
-        _generate_kokoro_local_cpu(
-            text="Testing Kokoro", voice="af_sarah", speed=1.0, lang="en-us",
-            model_name="kokoro-v1.0-local", config={}
-        )
 
 
 @pytest.mark.asyncio
@@ -44,10 +28,22 @@ async def test_tts_sample_endpoint_success_mock():
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://testserver"
         ) as ac:
-            resp = await ac.get(
-                "/api/v1/audio/sample?model=kokoro-v1.0-live&voice=af_sarah"
-            )
+            resp = await ac.get("/api/v1/audio/sample?model=kokoro-v1.0-live&voice=af_sarah")
             assert resp.status_code == 200
             assert "audio/wav" in resp.headers["content-type"]
             assert resp.content == fake_wav_bytes
 
+
+@pytest.mark.asyncio
+async def test_local_kokoro_no_longer_runs_in_gateway():
+    from app.services.tts.kokoro_provider import generate_kokoro_local
+
+    with pytest.raises(RuntimeError, match="worker is not configured"):
+        await generate_kokoro_local(
+            text="test",
+            voice="af_sarah",
+            speed=1.0,
+            lang="en-us",
+            model_name="kokoro-v1.0-local",
+            config={},
+        )

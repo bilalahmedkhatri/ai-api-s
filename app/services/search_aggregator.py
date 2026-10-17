@@ -5,11 +5,13 @@ never cares which engine was used.
 """
 
 import logging
+import time
 
 import httpx
 
 from app.api.v1.query.schemas import UnifiedSearchResponse, UnifiedSearchResult
 from app.core.config import settings
+from app.services.query_telemetry import record_call
 
 logger = logging.getLogger(__name__)
 
@@ -130,15 +132,20 @@ async def search(query: str, engine: str = "auto", max_results: int = 5) -> Unif
 
     last_exc: Exception | None = None
     for eng in order:
+        started = time.monotonic()
         try:
             if eng == "tavily":
-                return await search_tavily(query, max_results)
+                result = await search_tavily(query, max_results)
             elif eng == "brave":
-                return await search_brave(query, max_results)
+                result = await search_brave(query, max_results)
             else:
-                return await search_duckduckgo(query, max_results)
+                result = await search_duckduckgo(query, max_results)
         except Exception as exc:
-            logger.warning("Engine %s failed: %s — trying next", eng, exc)
+            record_call("search", eng, started, error=exc)
+            logger.warning("Engine %s failed error_type=%s", eng, type(exc).__name__)
             last_exc = exc
+        else:
+            record_call("search", eng, started, configured_cost=getattr(settings, f"{eng}_search_cost_usd", None))
+            return result
 
-    raise RuntimeError(f"All search engines failed. Last error: {last_exc}")
+    raise RuntimeError("All search engines failed") from last_exc

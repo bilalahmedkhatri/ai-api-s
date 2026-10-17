@@ -9,11 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import AsyncSessionLocal
 from app.models.db_models import TTSModel
+from app.services.tts.availability import LOCAL_KOKORO_UNAVAILABLE, is_local_kokoro
 from app.services.tts.gemini_provider import _generate_gemini_speech
 from app.services.tts.kokoro_provider import (
     _generate_kokoro_live,
     _resolve_kokoro_lang,
-    generate_kokoro_local,
 )
 from app.services.tts.sample_cache import cache_voice_sample, get_cached_voice_sample
 
@@ -76,6 +76,9 @@ async def generate_dynamic_speech(
     if not model:
         raise ValueError(f"Model '{model_name}' not found")
 
+    if is_local_kokoro(model.provider, getattr(model, 'is_local', False)):
+        raise ValueError(LOCAL_KOKORO_UNAVAILABLE)
+
     target_voice = voice or model.default_voice
 
     # 1. Sample cache
@@ -102,17 +105,10 @@ async def generate_dynamic_speech(
         target_speed = speed or extra.get("speed") or model.default_speed or 1.0
         target_lang = _resolve_kokoro_lang(target_voice, lang or extra.get("lang"), model.default_lang)
 
-        if model.is_local:
-            wav_bytes, _ = await generate_kokoro_local(
-                text=text, voice=target_voice, speed=target_speed, lang=target_lang,
-                model_name=model_name, config=model.provider_config,
-            )
-            mime = "audio/wav"
-        else:
-            wav_bytes, mime = await _generate_kokoro_live(
-                text=text, voice=target_voice, speed=target_speed, lang=target_lang,
-                model_name=model_name, config=model.provider_config, url=model.api_endpoint_url,
-            )
+        wav_bytes, mime = await _generate_kokoro_live(
+            text=text, voice=target_voice, speed=target_speed, lang=target_lang,
+            model_name=model_name, config=model.provider_config, url=model.api_endpoint_url,
+        )
     else:
         raise ValueError(f"Unsupported provider: {provider_name}")
 

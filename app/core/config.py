@@ -75,6 +75,14 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
     workers: int = 1
+    # Direct prompt generation; independent of the legacy query/search pipeline.
+    generation_max_prompt_chars: int = Field(default=32768, ge=1)
+    generation_max_body_bytes: int = Field(default=524288, ge=1024)
+    generation_max_output_tokens: int = Field(default=2048, ge=1)
+    generation_timeout_seconds: float = Field(default=45, gt=0, le=180)
+    generation_provider_timeout_seconds: float = Field(default=20, gt=0, le=120)
+    generation_max_concurrency: int = Field(default=4, ge=1, le=64)
+    generation_rate_limit: str = "30/minute"
     tts_gemini_concurrency: int = Field(default=2, ge=1, le=8)
     tts_gemini_key_concurrency: int = Field(default=2, ge=1, le=8)
     tts_kokoro_concurrency: int = Field(default=1, ge=1, le=4)
@@ -90,6 +98,10 @@ class Settings(BaseSettings):
     # Search API keys — set in .env (leave blank to skip that engine)
     tavily_api_key: str | None = os.environ.get("TAVILY_API_KEY")
     brave_api_key: str | None = os.environ.get("BRAVE_API_KEY")
+    # Optional account-specific per-call estimates, never assumed from public pricing.
+    tavily_search_cost_usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    brave_search_cost_usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    duckduckgo_search_cost_usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
     # Upstash Redis (serverless cache) — set in .env
     upstash_redis_rest_url: str | None = os.environ.get("UPSTASH_REDIS_REST_URL")

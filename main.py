@@ -18,6 +18,7 @@ from app.core.logging_config import (
     upload_log_batches,
 )
 from app.core.middleware import RequestIDMiddleware, limiter
+from app.services.query_maintenance import query_maintenance_loop
 from app.services.tts.maintenance import maintenance_loop
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -51,15 +52,19 @@ if _sentry_dsn and "..." not in _sentry_dsn:
 async def lifespan(app: FastAPI):
     archive_task = asyncio.create_task(archive_log_loop())
     maintenance_task = asyncio.create_task(maintenance_loop())
+    query_task = asyncio.create_task(query_maintenance_loop())
     try:
         yield
     finally:
         archive_task.cancel()
         maintenance_task.cancel()
+        query_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await archive_task
         with contextlib.suppress(asyncio.CancelledError):
             await maintenance_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await query_task
         for handler in logging.getLogger().handlers:
             if isinstance(handler, _JsonlBatchHandler):
                 handler.seal()
@@ -89,6 +94,13 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """Log validation details on 422 Unprocessable Content to ease debugging."""
+    if request.url.path == "/api/v1/dashboard/api-keys":
+        return JSONResponse(status_code=422, content={"detail": "Enter a valid key name and master key"},
+                            headers={"Cache-Control": "no-store"})
+    if request.url.path.rstrip("/") == "/api/v1/query":
+        logger.warning("Query validation rejected request_id=%s", getattr(request.state, "request_id", None))
+        return JSONResponse(status_code=422, content={"detail": "Invalid query request"},
+                            headers={"Cache-Control": "no-store"})
     logger.warning(
         "Request validation error on %s %s: %s",
         request.method,

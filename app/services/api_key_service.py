@@ -8,8 +8,8 @@ import secrets
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.dashboard import Membership
 from app.models.db_models import AccessAPIKey, AuthorizedApp, User
-from app.services.app_access_service import normalize_origin
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,8 @@ async def generate_api_key(
     db: AsyncSession,
     client_name: str,
     authorized_app_id: int,
+    *,
+    commit: bool = True,
 ) -> tuple[str, AccessAPIKey]:
     """
     Generate a new API key for a third-party client application.
@@ -50,7 +52,10 @@ async def generate_api_key(
         is_active=True,
     )
     db.add(api_key_record)
-    await db.commit()
+    if commit:
+        await db.commit()
+    else:
+        await db.flush()
     await db.refresh(api_key_record)
 
     logger.info("Generated new AccessAPIKey for client='%s' (prefix='%s')", client_name, key_prefix)
@@ -66,12 +71,9 @@ async def verify_api_key(
     Verify a raw API key against the database.
     If valid and active, updates last_used_at timestamp and returns the AccessAPIKey record.
     """
-    if not raw_key or not raw_key.strip() or not origin_domain:
-        return None
-
-    try:
-        origin = normalize_origin(origin_domain)
-    except ValueError:
+    # origin_domain is retained only for compatibility with existing Python callers.
+    # The key authenticates requests independently of the caller's address.
+    if not raw_key or not raw_key.strip():
         return None
 
     hashed = hash_key(raw_key.strip())
@@ -80,7 +82,6 @@ async def verify_api_key(
     ).join(User, AuthorizedApp.owner_user_id == User.id).where(
         AccessAPIKey.hashed_key == hashed,
         AccessAPIKey.is_active.is_(True),
-        AuthorizedApp.allowed_origin == origin,
         AuthorizedApp.is_active.is_(True),
         AuthorizedApp.is_approved.is_(True),
         User.is_active.is_(True),
@@ -93,11 +94,31 @@ async def verify_api_key(
         logger.warning("API key verification failed: Key not found or inactive")
         return None
 
+    if not await customer_project_active(db, record.authorized_app_id):
+        return None
+
     # Update last_used_at
     record.last_used_at = datetime.datetime.now(datetime.UTC)
     await db.commit()
 
     return record
+
+
+async def customer_project_active(db, app_id: int) -> bool:
+    """Legacy app grants remain valid; customer projects also require live membership."""
+    membership = (await db.execute(
+        select(Membership).where(Membership.api_project_id == app_id)
+    )).scalar_one_or_none()
+    if membership is None:
+        return True
+    from app.services.dashboard import aware, now
+
+    app = await db.get(AuthorizedApp, app_id)
+    return bool(
+        app and membership.user_id == app.owner_user_id
+        and membership.status == "approved" and membership.api_keys_unlocked
+        and (membership.access_expires_at is None or aware(membership.access_expires_at) > now())
+    )
 
 
 async def revoke_api_key(db: AsyncSession, key_id: int) -> bool:

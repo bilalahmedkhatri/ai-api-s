@@ -4,6 +4,7 @@ import datetime
 import json
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Date,
     DateTime,
@@ -28,6 +29,9 @@ class Query(Base):
     __tablename__ = "queries"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    authorized_app_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("authorized_apps.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     raw_query: Mapped[str] = mapped_column(Text, nullable=False)
     input_type: Mapped[str] = mapped_column(String(64), nullable=False, default="text")
     created_at: Mapped[datetime.datetime] = mapped_column(
@@ -478,6 +482,9 @@ class ProviderAPIKey(Base):
 
     # Counter reset every midnight UTC via a cron or reset_daily_counts()
     requests_today: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    # Lifetime allocations from the provider-key claim endpoint; never reset daily.
+    total_count: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0", nullable=False)
 
     # Timestamp of the last successful API call using this key
     last_used_at: Mapped[datetime.datetime | None] = mapped_column(

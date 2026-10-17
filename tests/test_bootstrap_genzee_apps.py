@@ -25,7 +25,7 @@ async def test_onboarding_reuses_apps_and_keys_and_separates_origins(onboarding_
     local, production = second['local'], second['production']
     assert local['raw_key'] != production['raw_key']
     assert await verify_api_key(db, local['raw_key'], local['app'].allowed_origin)
-    assert await verify_api_key(db, local['raw_key'], production['app'].allowed_origin) is None
+    assert await verify_api_key(db, local['raw_key'], production['app'].allowed_origin)
 
 
 @pytest.mark.parametrize('email,permissions', [('missing@example.test', set(GENZEE_ENDPOINTS)), ('owner@example.test', set())])

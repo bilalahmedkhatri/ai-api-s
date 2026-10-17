@@ -1,4 +1,4 @@
-"""Embedding service — thin wrapper around litellm.embedding().
+"""Embedding service — thin wrapper around litellm.aembedding().
 
 Uses litellm so any provider (OpenAI text-embedding-3-small, Cohere, etc.)
 can be swapped via .env without touching this file.
@@ -9,9 +9,12 @@ litellm is already installed and handles embeddings via API.
 """
 
 import logging
+import time
 from functools import lru_cache
 
 import litellm
+
+from app.services.query_telemetry import record_call
 
 logger = logging.getLogger(__name__)
 
@@ -44,5 +47,11 @@ async def embed(texts: list[str]) -> list[list[float]]:
     model = _model()
     logger.debug("Embedding %d text(s) via %s", len(texts), model)
 
-    response = litellm.embedding(model=model, input=texts)
+    started = time.monotonic()
+    try:
+        response = await litellm.aembedding(model=model, input=texts, timeout=15, num_retries=0)
+    except Exception as exc:
+        record_call("embedding", model, started, error=exc)
+        raise
+    record_call("embedding", model, started, response=response)
     return [item["embedding"] for item in response.data]

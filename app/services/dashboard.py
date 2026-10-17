@@ -69,6 +69,7 @@ def redact(value):
                     "password",
                     "token",
                     "raw_key",
+                    "master_key",
                     "plain_key",
                     "encrypted",
                     "authorization",
@@ -103,6 +104,7 @@ async def member(request: Request, db=Depends(get_db)):
         or (m.access_expires_at and aware(m.access_expires_at) <= now())
     ):
         raise HTTPException(403, "Dashboard access is not approved")
+    request.state.dashboard_membership = m
     return m
 
 
@@ -115,7 +117,7 @@ async def grants(db, m):
 
 
 async def allowed(db, m, kind, key, action="view"):
-    if m.role == "admin":
+    if m.role == "admin" or (kind == "page" and key == "api-keys"):
         return True
     return any(
         p.resource_type == kind and p.resource_key == key and p.action == action

@@ -35,7 +35,7 @@ class _JsonFormatter(logging.Formatter):
     def format(self, record):
         payload = {'ts': datetime.fromtimestamp(record.created, UTC).isoformat(),
                    'level': record.levelname, 'logger': record.name, 'msg': record.getMessage()}
-        for key in ('request_id', 'path', 'input_type', 'cache_hit', 'elapsed_ms'):
+        for key in ('request_id', 'path', 'input_type', 'cache_hit', 'elapsed_ms', 'status_code'):
             if getattr(record, key, None) is not None:
                 payload[key] = getattr(record, key)
         if record.exc_info:

@@ -244,7 +244,7 @@ async def test_real_gateway_permissions_and_ownership(onboarding_db, monkeypatch
 
 async def test_api_creates_indexed_chunks_and_snapshots_speed(context, monkeypatch):
     db, _, _, _ = context
-    model = TTSModel(name='snapshot', provider='kokoro', is_local=True, is_active=True,
+    model = TTSModel(name='snapshot', provider='kokoro', is_local=False, is_active=True,
                      default_voice='af_sarah', default_speed=1, provider_config={})
     db.add(model)
     await db.commit()

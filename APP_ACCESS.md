@@ -1,5 +1,30 @@
 # FastAPI app access aur Facebook ownership
 
+## Customer API keys (2026-10-15)
+
+Current customer flow: existing registration/login/approval -> administrator-visible
+encrypted membership master key -> dedicated API Keys page -> master key required
+only for the first successful issuance -> generated secret shown once.
+
+API authentication now accepts the secret via Authorization: Bearer or X-API-Key
+without requiring Origin/X-App-Origin. Active project, active API-enabled gateway
+owner and method/route grants still apply. Customer keys additionally require an
+approved, non-expired membership. Administrative APIs keep separate authentication.
+
+New customer keys share an automatically created internal ownership project; no
+origin registration is needed. Existing apps, keys, TTS jobs and Facebook tokens
+retain their original assignments. Legacy endpoint grants remain in force.
+
+Migration ab92d18e740c follows f73a9d20bc41. Apply it before restarting the updated
+backend/dashboard. Existing approved memberships can be enabled in Members;
+new approvals receive a master key automatically. See admin/README.md for the
+contract and rollout steps. Isolated tests do not migrate the configured database.
+
+The older exact-origin onboarding instructions and dated verification below are
+historical. Origin remains relevant to optional legacy browser CORS registration,
+but is no longer an API-key authentication requirement.
+
+
 FastAPI ke owners sirf is gateway ki `users` table mein hain. Frontend user IDs,
 sessions aur permissions ko is table mein import ya map nahi kiya jata.
 
@@ -182,3 +207,22 @@ credentials to load the new code.
 TTS creation, status, selective retry and URL renewal now enforce registered app ownership. Legacy unassigned jobs are retained but hidden from public app endpoints; frontend identities remain separate. Migration `e42b8d901c63` follows the existing dashboard revision. The scoped migration script appends the retry route grant to both verified GenZee origins while preserving existing grants and keys. See [TTS_CHECKPOINTS.md](TTS_CHECKPOINTS.md) for recovery, storage cleanup and deployment limits. Extracted media ownership remains outside this phase.
 
 Live-preview migration `f53c9e012d74` follows that checkpoint revision. Both existing apps now have `GET /api/v1/audio/tts/stream/{job_id}`; bootstrap provisions 14 route grants. The stream uses the same app authorization and job scoping. Frontend stream access still requires its separate user history or cookie-bound guest proof; gateway ownership never comes from a frontend user ID.
+
+
+## Daily provider-key reset
+
+Use `POST /api/v1/cron/reset-daily-keys` with the cron secret; GET is no longer supported. Set QStash's destination method to POST. Optional `?provider=gemini` scopes the reset to that provider (case-insensitive); omitting it resets all providers. Empty or invalid identifiers return 422; an unknown provider affects zero rows. The existing reset sets requests_today=0 and is_active=true, including manually disabled keys; total_count is preserved. Repository reference checks found no runtime GET callers; external scheduler configuration must be checked separately. Deploy the backend change before testing the production route.
+
+## Admin-only provider key allocation
+
+`POST /api/v1/keys/provider/{provider}/claim` returns a JSON array containing **only raw provider key strings** (up to two). Authenticate using the existing admin `X-Cron-Secret` or `Authorization: Bearer <admin-secret>`; ordinary app/customer keys cannot call it. Use a trusted server client over HTTPS; never place this credential flow in a browser bundle. Responses use `Cache-Control: no-store` and `Pragma: no-cache`; the route never logs returned secrets.
+
+Eligible rows match the normalized provider, are active, and have remaining daily quota (or no daily limit). Ranking is ascending `total_count`, ascending `requests_today`, ascending priority, then descending ID (newest tie wins). Selection and both increments occur in one SQL UPDATE with a locked selection on PostgreSQL (`FOR UPDATE SKIP LOCKED`). Returned rows are decrypted before commit; a decryption/database failure rolls back the allocation and gives a generic 503. HTTP 409 means no eligible/unlocked key; one remaining eligible row returns one key. Provider identifiers are validated; invalid identifiers give 422.
+
+`total_count` is a lifetime **allocation counter** for this endpoint, not a provider-billing or network-attempt counter. Daily reset preserves it. Each returned row increments `total_count` and `requests_today` once, even if its later external provider call fails. Clients should not call a second accounting operation for the same reservation. Existing internal TTS/keyword flows are not wired through this allocation endpoint and retain their existing counting behavior. HTTP delivery and database commit are not atomic: a disconnected client or repeated POST may consume another allocation; this minimal endpoint does not provide idempotency tokens or leases.
+
+Migration `c84f10d2a639` adds `provider_api_keys.total_count` as non-null BIGINT with a database default of zero; legacy and newly inserted rows start at zero. Its parent is `ab92d18e740c`. Apply the migration before serving the new ORM model. Existing provider key list endpoints continue their current metadata-only contracts.
+
+Verification: `tests/test_provider_key_claim.py` covers selection, counter increments, ordering/ties, provider isolation, inactive/quota exclusion, single/empty pools, authorization, secret-only/no-store responses, corrupt-key rollback, daily reset, concurrent SQLite quota enforcement, PostgreSQL locking SQL compilation, and isolated migration upgrade/downgrade. PostgreSQL concurrency is not proven by the SQLite or compilation checks; live-provider requests are not part of these tests.
+
+Allocation verification (2026-10-16): 81 isolated claim/authorization/customer-key/TTS tests passed, plus Ruff and compilation. With explicit user authorization, migrations ab92d18e740c and c84f10d2a639 were applied to the configured PostgreSQL database from revision f73a9d20bc41. Final revision c84f10d2a639, membership columns/project foreign key/unique constraint, and total_count BIGINT NOT NULL DEFAULT 0 were verified. No real provider keys were fetched or claimed, and no live provider call was made. The isolated tests were completed before this schema deployment; they were not rerun against the configured database.

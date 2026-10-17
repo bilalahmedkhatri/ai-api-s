@@ -44,6 +44,9 @@ class RoutingDecision(BaseModel):
     engine_used: str | None = None
     model_used: str | None = None
     elapsed_ms: float = 0.0
+    model_attempts: list[dict] = Field(default_factory=list)
+    stage_durations_ms: dict[str, float] = Field(default_factory=dict)
+    search_unavailable: bool = False
 
 
 class QueryResponse(BaseModel):

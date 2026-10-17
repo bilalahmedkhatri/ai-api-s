@@ -39,32 +39,7 @@ def test_compress_json_payload():
     assert json.loads(_decompress(_compress(data))) == payload
 
 
-# ── Model routing matrix tests ─────────────────────────────────────────────────
-
-from app.services.model_router import LLM_TIMEOUT, ROUTING_MATRIX, _pick_models
-
-
-def test_routing_matrix_coverage():
-    """All semantic_router categories have a routing entry or a default."""
-    categories = ["coding", "mathematics", "creative_writing", "general_knowledge", "general"]
-    for cat in categories:
-        primary, fallbacks = _pick_models(cat)
-        assert primary, f"No primary model for category '{cat}'"
-        assert isinstance(fallbacks, list)
-
-
-def test_routing_matrix_fallback_chain():
-    """Every routing entry has at least one fallback."""
-    for intent, (primary, fallbacks) in ROUTING_MATRIX.items():
-        assert len(fallbacks) >= 1, f"No fallbacks for intent '{intent}'"
-        assert primary not in fallbacks, f"Primary is its own fallback for '{intent}'"
-
-
-def test_unknown_intent_gets_default():
-    """Unmapped intents return the default model pair."""
-    primary, fallbacks = _pick_models("totally_unknown_category")
-    assert primary  # default primary assigned
-    assert len(fallbacks) >= 1
+from app.services.model_router import LLM_TIMEOUT
 
 
 def test_llm_timeout_reasonable():

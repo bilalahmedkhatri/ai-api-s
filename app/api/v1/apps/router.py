@@ -13,7 +13,7 @@ from app.db.database import get_db
 from app.models.db_models import AccessAPIKey, AuthorizedApp, User
 from app.services.app_access_service import normalize_origin
 
-PROTECTED_PREFIXES = ("audio", "query", "image", "video", "ingest", "media", "facebook")
+PROTECTED_PREFIXES = ("audio", "query", "generate", "image", "video", "ingest", "media", "facebook")
 
 
 def require_admin(
@@ -42,7 +42,7 @@ class AppCreate(BaseModel):
     @classmethod
     def validate_endpoints(cls, values: list[str]) -> list[str]:
         for value in values:
-            if not re.fullmatch(r"(?:GET|POST|PUT|PATCH|DELETE|HEAD) /api/v1/(?:audio|query|image|video|ingest|media|facebook)(?:/[^\s?#]*)?", value):
+            if not re.fullmatch(r"(?:GET|POST|PUT|PATCH|DELETE|HEAD) /api/v1/(?:audio|query|generate|image|video|ingest|media|facebook)(?:/[^\s?#]*)?", value):
                 raise ValueError("Use an exact METHOD /api/v1/... route template without wildcards")
             if "*" in value:
                 raise ValueError("Endpoint wildcards are not allowed")

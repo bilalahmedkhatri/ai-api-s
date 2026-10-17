@@ -1,44 +1,44 @@
-"""app/services/tts/kokoro_provider.py — Kokoro (local ONNX + Replicate live)."""
+"""Remote Kokoro adapter; local inference source lives in falai/kokoro."""
 
 import asyncio
-import io
 import logging
 import os
-import threading
-from pathlib import Path
-
-import numpy as np
-
-from app.core.config import settings
-from app.services.tts.constants import (
-    DEFAULT_SAMPLE_RATE,
-    KOKORO_CHUNK_GAP_SEC,
-    KOKORO_CHUNK_MAX_CHARS,
-)
-from app.services.tts.text_utils import split_text_into_chunks
 
 logger = logging.getLogger(__name__)
+_kokoro_instances: dict = {}  # Import compatibility only; no local model is cached.
 
-# model_name -> Kokoro instance. threading.Lock because loading happens in worker threads.
-_kokoro_instances: dict = {}
-_kokoro_lock = threading.Lock()
-# Limit parallel CPU inference so concurrent requests don't oversubscribe the CPU.
-_kokoro_sem = asyncio.Semaphore(int(getattr(settings, "kokoro_max_concurrency", 2)))
+
+def _get_kokoro_model(*args, **kwargs):
+    raise RuntimeError("Local Kokoro inference was relocated; worker is not configured.")
+
+
+get_kokoro_model = _get_kokoro_model
+
+
+def _generate_kokoro_local_cpu(*args, **kwargs):
+    raise RuntimeError("Local Kokoro inference was relocated; worker is not configured.")
+
+
+async def generate_kokoro_local(*args, **kwargs):
+    raise RuntimeError("Local Kokoro inference was relocated; worker is not configured.")
+
 
 VOICE_LANG_PREFIX_MAP = {
     "a": "en-us",  # American English
     "b": "en-gb",  # British English
-    "e": "es",     # Spanish
+    "e": "es",  # Spanish
     "f": "fr-fr",  # French
-    "h": "hi",     # Hindi
-    "i": "it",     # Italian
-    "j": "ja",     # Japanese
+    "h": "hi",  # Hindi
+    "i": "it",  # Italian
+    "j": "ja",  # Japanese
     "p": "pt-br",  # Portuguese
-    "z": "cmn",    # Mandarin
+    "z": "cmn",  # Mandarin
 }
 
 
-def _resolve_kokoro_lang(voice: str, lang: str | None = None, default_lang: str | None = None) -> str:
+def _resolve_kokoro_lang(
+    voice: str, lang: str | None = None, default_lang: str | None = None
+) -> str:
     """Infer the correct language code for Kokoro based on voice name prefix if not specified."""
     if lang and lang.strip():
         return lang.strip()
@@ -51,75 +51,6 @@ def _resolve_kokoro_lang(voice: str, lang: str | None = None, default_lang: str 
     return "en-us"
 
 
-def _get_kokoro_model(model_name: str, config: dict | None = None):
-    """Lazy load and cache Kokoro ONNX model instances (thread-safe, loaded once)."""
-    with _kokoro_lock:
-        if model_name in _kokoro_instances:
-            return _kokoro_instances[model_name]
-
-        try:
-            from kokoro_onnx import Kokoro  # noqa: PLC0415
-        except ImportError as exc:
-            raise RuntimeError("kokoro-onnx package is not installed on the server.") from exc
-
-        config = config or {}
-        model_path = Path(config.get("model_path") or settings.kokoro_model_path)
-        voices_path = Path(config.get("voices_path") or settings.kokoro_voices_path)
-
-        if not model_path.exists() or not voices_path.exists():
-            raise FileNotFoundError(
-                f"Kokoro ONNX model files missing: '{model_path}' or '{voices_path}'."
-            )
-
-        _kokoro_instances[model_name] = Kokoro(str(model_path), str(voices_path))
-        return _kokoro_instances[model_name]
-
-
-# Alias for backward compatibility
-get_kokoro_model = _get_kokoro_model
-
-
-def _generate_kokoro_local_cpu(
-    text: str, voice: str, speed: float, lang: str, model_name: str, config: dict
-) -> tuple[bytes, int]:
-    """Synchronous CPU-bound audio generation for Kokoro Local."""
-    import soundfile as sf
-
-    kokoro = _get_kokoro_model(model_name, config)
-    resolved_lang = _resolve_kokoro_lang(voice, lang)
-    chunks = split_text_into_chunks(text, max_chars=KOKORO_CHUNK_MAX_CHARS)
-
-    parts: list[np.ndarray] = []
-    sample_rate = DEFAULT_SAMPLE_RATE
-
-    for chunk in chunks:
-        samples, sr = kokoro.create(chunk, voice=voice, speed=speed, lang=resolved_lang)
-        sample_rate = sr
-        if len(samples) > 0:
-            if parts:  # short pause between chunks
-                parts.append(np.zeros(int(sr * KOKORO_CHUNK_GAP_SEC), dtype=samples.dtype))
-            parts.append(samples)
-
-    if not parts:
-        raise RuntimeError("Failed to generate audio for any text chunks.")
-
-    buf = io.BytesIO()
-    sf.write(buf, np.concatenate(parts), sample_rate, format="WAV")
-    return buf.getvalue(), sample_rate
-
-
-async def generate_kokoro_local(
-    text: str, voice: str, speed: float, lang: str, model_name: str, config: dict
-) -> tuple[bytes, int]:
-    """Async wrapper: CPU work in a thread, bounded by a semaphore."""
-    async with _kokoro_sem:
-        return await asyncio.to_thread(
-            _generate_kokoro_local_cpu,
-            text=text, voice=voice, speed=speed, lang=lang,
-            model_name=model_name, config=config,
-        )
-
-
 async def _generate_kokoro_live(
     text: str,
     voice: str,
@@ -129,7 +60,7 @@ async def _generate_kokoro_live(
     config: dict | None = None,
     url: str | None = None,
 ) -> tuple[bytes, str]:
-    """Kokoro via Replicate (if token configured), automatic fallback to local ONNX."""
+    """Kokoro via Replicate; local fallback requires explicit DB configuration."""
     import httpx
 
     config = config or {}
@@ -169,7 +100,8 @@ async def _generate_kokoro_live(
                                 )
 
                     audio_url = (
-                        output if isinstance(output, str)
+                        output
+                        if isinstance(output, str)
                         else (output[0] if isinstance(output, list) and output else None)
                     )
                     if audio_url:
@@ -177,12 +109,18 @@ async def _generate_kokoro_live(
                         if audio_res.status_code == 200:
                             return audio_res.content, "audio/wav"
                 else:
-                    logger.warning("Replicate returned HTTP %s, falling back to local.", res.status_code)
+                    logger.warning("Replicate returned HTTP %s.", res.status_code)
         except Exception as e:
             logger.warning(
-                "Replicate Kokoro live generation failed (%s), falling back to local Kokoro ONNX: %s",
-                type(e).__name__, e,
+                "Replicate Kokoro live generation failed (%s).",
+                type(e).__name__,
             )
+
+    if config.get("allow_local_fallback") is not True:
+        raise RuntimeError(
+            "Remote Kokoro generation unavailable; local fallback is disabled. "
+            "Check remote provider availability and credentials."
+        )
 
     wav_bytes, _ = await generate_kokoro_local(
         text=text, voice=voice, speed=speed, lang=lang, model_name=model_name, config=config

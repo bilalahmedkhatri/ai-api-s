@@ -100,6 +100,10 @@ async def test_recovery_only_claims_authorized_expired_jobs(onboarding_db, monke
         job.status = "failed"
     if blocked == "legacy":
         job.generation_json = None
+    if blocked == "local":
+        generation = json.loads(job.generation_json)
+        generation['model_snapshot'].update(provider='kokoro', is_local=True)
+        job.generation_json = json.dumps(generation)
     if blocked == "snapshot":
         job.generation_json = '{"model_snapshot":{"name":"legacy"},"voice":"Kore"}'
     await db.commit()

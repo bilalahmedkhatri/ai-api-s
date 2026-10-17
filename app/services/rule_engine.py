@@ -13,23 +13,24 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import JSON, cast, func, select, type_coerce
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.db_models import FinalResponse
+from app.models.db_models import FinalResponse, Query
 
 logger = logging.getLogger(__name__)
+_TIME_PATTERN = re.compile(r"\bcurrent\s+time\b|\bwhat\s+time\s+is\s+it\b", re.I)
 
 
 # ── Intent patterns ────────────────────────────────────────────────────────────
 # Each tuple: (compiled_regex, intent_label, requires_llm, requires_search)
 _RULES: list[tuple[re.Pattern, str, bool, bool]] = [
-    # Real-time lookups — need search, skip LLM
-    (re.compile(r"\b(weather|temperature|forecast)\b.{0,30}\bin\b", re.I), "weather", False, True),
-    (re.compile(r"\b(price|cost|how much).{0,20}\bof\b", re.I), "pricing", False, True),
-    (re.compile(r"\bcurrent\s+time\b|\bwhat\s+time\s+is\s+it\b", re.I), "time_lookup", False, False),
-    (re.compile(r"\blatest\s+news\b|\bbreaking\s+news\b", re.I), "news", False, True),
-    (re.compile(r"\bwho\s+is\s+(the\s+)?(ceo|president|prime\s+minister|founder)\b", re.I), "factual_person", False, True),
+    # Real-time lookups use search-backed LLM answers; time is computed directly.
+    (re.compile(r"\b(weather|temperature|forecast)\b.{0,30}\bin\b", re.I), "weather", True, True),
+    (re.compile(r"\b(price|cost|how much).{0,20}\bof\b", re.I), "pricing", True, True),
+    (_TIME_PATTERN, "time_lookup", False, False),
+    (re.compile(r"\blatest\s+news\b|\bbreaking\s+news\b", re.I), "news", True, True),
+    (re.compile(r"\bwho\s+is\s+(the\s+)?(ceo|president|prime\s+minister|founder)\b", re.I), "factual_person", True, True),
     # Conversational — no search needed
     (re.compile(r"^\s*(hi|hello|hey|good\s+(morning|evening|night))[!.,]?\s*$", re.I), "greeting", False, False),
     (re.compile(r"\b(thank\s*you|thanks)\b", re.I), "thanks", False, False),
@@ -48,6 +49,11 @@ class RuleResult:
     requires_search: bool
     # Populated only on cache hit
     cached_answer: str | None = None
+    cached_model: str | None = None
+    cached_query_id: int | None = None
+    cached_intent: str | None = None
+    cached_engine: str | None = None
+    answer: str | None = None
     cache_hit: bool = False
 
 
@@ -55,13 +61,22 @@ def _md5(text: str) -> str:
     return hashlib.md5(text.strip().lower().encode()).hexdigest()
 
 
-async def _check_cache(query: str, db: AsyncSession) -> str | None:
+def is_time_query(query: str) -> bool:
+    return bool(_TIME_PATTERN.search(query))
+
+
+async def _check_cache(query: str, db: AsyncSession, authorized_app_id: int | None = None) -> FinalResponse | None:
     """Return a cached FinalResponse answer if it exists within the last hour."""
     q_hash = _md5(query)
     cutoff = datetime.now(UTC) - timedelta(hours=1)
+    metadata = (cast(Query.meta_fields, JSON) if db.get_bind().dialect.name == "postgresql"
+                else type_coerce(Query.meta_fields, JSON))
 
     stmt = (
         select(FinalResponse)
+        .join(Query, Query.id == FinalResponse.query_id)
+        .where(Query.authorized_app_id == authorized_app_id)
+        .where(func.coalesce(metadata["request_type"].as_string(), "query") != "generate")
         .where(FinalResponse.created_at >= cutoff)
         .order_by(FinalResponse.created_at.desc())
         .limit(10)
@@ -70,21 +85,25 @@ async def _check_cache(query: str, db: AsyncSession) -> str | None:
 
     for row in rows:
         meta = row.meta  # uses the @property on the model
-        if meta.get("query_hash") == q_hash:
+        if (meta.get("query_hash") == q_hash and meta.get("status", "completed") == "completed"
+                and meta.get("intent_category") != "time_lookup"
+                and not meta.get("search_unavailable")
+                and not row.generated_output.startswith(("[LLM error:", "[Rule-matched:"))):
             logger.info("Cache hit for query hash %s", q_hash)
-            return row.generated_output
+            return row
 
     return None
 
 
-async def run_rule_engine(query: str, db: AsyncSession) -> RuleResult:
+async def run_rule_engine(query: str, db: AsyncSession, no_cache: bool = False,
+                          authorized_app_id: int | None = None) -> RuleResult:
     """
     1. Check SQLite cache (1-hour TTL via MD5 hash).
     2. Match regex rules.
     3. Return RuleResult — matched=False means pass to semantic router.
     """
     # ── Step 1: cache lookup ───────────────────────────────────────────────────
-    cached = await _check_cache(query, db)
+    cached = await _check_cache(query, db, authorized_app_id) if not no_cache else None
     if cached:
         return RuleResult(
             matched=True,
@@ -92,7 +111,11 @@ async def run_rule_engine(query: str, db: AsyncSession) -> RuleResult:
             intent="cached",
             requires_llm=False,
             requires_search=False,
-            cached_answer=cached,
+            cached_answer=cached.generated_output,
+            cached_model=cached.model_used,
+            cached_query_id=cached.query_id,
+            cached_intent=cached.meta.get("intent_category"),
+            cached_engine=cached.meta.get("engine_used"),
             cache_hit=True,
         )
 
@@ -106,6 +129,11 @@ async def run_rule_engine(query: str, db: AsyncSession) -> RuleResult:
                 intent=intent,
                 requires_llm=requires_llm,
                 requires_search=requires_search,
+                answer={
+                    "greeting": "Hello! How can I help you today?",
+                    "thanks": "You're welcome! How else can I help?",
+                    "time_lookup": "Current UTC time: " + datetime.now(UTC).isoformat(timespec="seconds"),
+                }.get(intent),
             )
 
     return RuleResult(matched=False, pattern=None, intent="unknown",

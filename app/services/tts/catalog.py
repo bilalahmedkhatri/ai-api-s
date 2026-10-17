@@ -4,6 +4,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.db_models import TTSModel, TTSVoice
+from app.services.tts.availability import is_local_kokoro
 
 
 async def get_dynamic_tts_models(db: AsyncSession) -> list[dict]:
@@ -11,7 +12,7 @@ async def get_dynamic_tts_models(db: AsyncSession) -> list[dict]:
     result = await db.execute(select(TTSModel).where(TTSModel.is_active.is_(True)))
     return [
         {"name": m.name, "provider": m.provider, "is_local": m.is_local}
-        for m in result.scalars().all()
+        for m in result.scalars().all() if not is_local_kokoro(m.provider, m.is_local)
     ]
 
 
@@ -27,7 +28,7 @@ async def get_dynamic_voices(
         select(TTSModel).where(TTSModel.name == model_name, TTSModel.is_active.is_(True))
     )
     model = model_result.scalar_one_or_none()
-    if not model:
+    if not model or is_local_kokoro(model.provider, model.is_local):
         raise ValueError(f"Model {model_name} not found or inactive.")
 
     stmt = select(TTSVoice).where(TTSVoice.model_id == model.id)

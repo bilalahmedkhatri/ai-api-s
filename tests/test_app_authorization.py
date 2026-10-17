@@ -33,6 +33,9 @@ class AsyncAdapter:
     def add(self, obj):
         self.session.add(obj)
 
+    def get_bind(self):
+        return self.session.get_bind()
+
     async def get(self, model, identifier):
         return self.session.get(model, identifier)
 
@@ -41,6 +44,9 @@ class AsyncAdapter:
 
     async def commit(self):
         self.session.commit()
+
+    async def rollback(self):
+        self.session.rollback()
 
     async def flush(self):
         self.session.flush()
@@ -94,10 +100,10 @@ async def headers(db, registered):
 @pytest.mark.parametrize("origin", [None, "https://foreign.example", "https://sub.app1.example.test",
                                      "http://app1.example.test", "https://app1.example.test:8080",
                                      "null", "https://app1.example.test@evil.test", "*"])
-async def test_exact_origin_rejection(isolated, origin):
+async def test_key_authentication_does_not_require_origin(isolated, origin):
     db, _, apps, _ = isolated
     auth = await headers(db, apps[0])
-    assert await verify_api_key(db, auth["X-API-Key"], origin) is None
+    assert await verify_api_key(db, auth["X-API-Key"], origin) is not None
 
 
 async def test_key_generation_revocation_and_unlinked_key(isolated):
@@ -131,7 +137,7 @@ async def test_revocation_takes_effect_on_next_request(isolated, target, field):
     ("GET", "/api/v1/audio/models"), ("GET", "/api/v1/audio/voices?model=test"),
     ("GET", "/api/v1/audio/sample?model=test&voice=test"), ("POST", "/api/v1/audio/tts"),
     ("GET", "/api/v1/audio/tts/status/job"), ("POST", "/api/v1/audio/tts/renew-url"),
-    ("POST", "/api/v1/query/"), ("POST", "/api/v1/ingest/audio/"),
+    ("POST", "/api/v1/query/"),
     ("POST", "/api/v1/ingest/image/"), ("POST", "/api/v1/ingest/video/"),
     ("GET", "/api/v1/image/models"), ("POST", "/api/v1/image/generate"),
     ("GET", "/api/v1/video/models"), ("POST", "/api/v1/video/generate"),
@@ -154,7 +160,7 @@ async def test_allowed_endpoint_and_bearer_and_referer(isolated):
         assert (await client.get("/api/v1/audio/tts/status/missing", headers=auth)).status_code == 404
         assert (await client.get("/api/v1/image/models", headers=auth)).status_code == 403
         assert (await client.get("/api/v1/audio/models", headers={"Authorization": "Bearer " + auth["X-API-Key"], "Referer": apps[0].allowed_origin + "/studio"})).status_code == 200
-        assert (await client.get("/api/v1/audio/models", headers={**auth, "Origin": apps[1].allowed_origin})).status_code == 401
+        assert (await client.get("/api/v1/audio/models", headers={**auth, "Origin": apps[1].allowed_origin})).status_code == 200
         assert (await client.get("/api/v1/audio/models?api_key=" + auth["X-API-Key"], headers={"X-App-Origin": apps[0].allowed_origin})).status_code == 401
 
 

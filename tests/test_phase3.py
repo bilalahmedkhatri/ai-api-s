@@ -18,7 +18,7 @@ def test_weather_rule_matches():
     pattern, intent, requires_llm, requires_search = _RULES[0]
     assert pattern.search("weather in London tomorrow")
     assert intent == "weather"
-    assert not requires_llm
+    assert requires_llm
     assert requires_search
 
 

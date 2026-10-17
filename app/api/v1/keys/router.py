@@ -12,13 +12,14 @@ from app.services.api_key_service import (
 )
 from app.services.key_manager import (
     add_provider_key,
+    claim_provider_keys,
     delete_provider_key,
     list_provider_keys,
     reset_daily_counts,
     toggle_key,
     update_provider_key,
 )
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -220,6 +221,43 @@ async def list_provider_keys_endpoint(
     )
     keys = await list_provider_keys(db, provider=provider)
     return {"provider": provider, "count": len(keys), "keys": keys}
+
+
+@router.post(
+    "/provider/{provider}/claim",
+    response_model=list[str],
+    summary="Allocate up to two least-used provider keys (admin, secrets only)",
+    tags=["Provider API Keys"],
+)
+async def claim_provider_keys_endpoint(
+    response: Response,
+    provider: str = Path(..., min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"),
+    db: AsyncSession = Depends(get_db),
+    authorization: str | None = Header(default=None),
+    x_cron_secret: str | None = Header(default=None, alias="X-Cron-Secret"),
+    cron_secret_header: str | None = Header(default=None, alias="Cron-Secret"),
+    cron_secret_env_header: str | None = Header(default=None, alias="CRON_SECRET"),
+) -> list[str]:
+    """Active, under-quota keys ordered by total_count, requests_today, priority, newest ID.
+
+    Both counters increment once per returned key. This reserves keys; it does not
+    call a provider. Lifetime counts are not a provider billing/request audit.
+    Requires the existing admin secret, never a browser or ordinary app key.
+    """
+    verify_cron_authorization(
+        authorization=authorization, x_cron_secret=x_cron_secret,
+        cron_secret_header=cron_secret_header, cron_secret_env_header=cron_secret_env_header,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    try:
+        keys = await claim_provider_keys(db, provider)
+    except Exception as exc:
+        logger.error("Provider key allocation failed provider=%s error_type=%s", provider, type(exc).__name__)
+        raise HTTPException(503, "Provider keys could not be allocated") from None
+    if not keys:
+        raise HTTPException(409, "No eligible provider keys are currently available")
+    return keys
 
 
 @router.patch(

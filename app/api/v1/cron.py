@@ -121,9 +121,8 @@ async def sync_provider_models_endpoint(
 
 
 @router.post("/reset-daily-keys", summary="Reset provider API key daily counters (run at midnight UTC)")
-@router.get("/reset-daily-keys", summary="Reset provider API key daily counters via GET (Cron-compatible)")
 async def reset_daily_keys_endpoint(
-    provider: str | None = Query(default=None, description="Provider to reset (e.g. 'gemini'). Omit to reset ALL providers."),
+    provider: str | None = Query(default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$", description="Provider to reset (e.g. 'gemini'). Omit to reset ALL providers."),
     db: AsyncSession = Depends(get_db),
     authorization: str | None = Header(default=None),
     upstash_authorization: str | None = Header(default=None, alias="Upstash-Forward-Authorization"),

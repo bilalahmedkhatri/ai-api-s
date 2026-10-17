@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.database import get_db
 from app.models.db_models import AccessAPIKey, AuthorizedApp
 from app.services.api_key_service import verify_api_key
-from app.services.app_access_service import endpoint_allowed, normalize_origin
+from app.services.app_access_service import endpoint_allowed
 
 
 async def get_current_api_key(
@@ -17,20 +17,10 @@ async def get_current_api_key(
 ) -> AccessAPIKey:
     """
     FastAPI dependency to authenticate requests using third-party AccessAPIKey.
-    Check exact app origin, active key, gateway owner grant, and endpoint permission.
+    Check the secret key, active account/project and endpoint permission.
     """
     if getattr(request.state, "api_key", None) is not None:
         return request.state.api_key
-    origin_header = request.headers.get("origin") or request.headers.get("x-app-origin")
-    if not origin_header:
-        referer = request.headers.get("referer")
-        if referer:
-            try:
-                origin_header = normalize_origin(referer, allow_path=True)
-            except ValueError:
-                pass
-    if not origin_header:
-        raise HTTPException(401, "Registered app origin is required")
     raw_key = None
     if x_api_key and x_api_key.strip():
         raw_key = x_api_key.strip()
@@ -38,12 +28,13 @@ async def get_current_api_key(
         raw_key = authorization.split("Bearer ", 1)[1].strip()
 
     if raw_key:
-        api_key_record = await verify_api_key(db, raw_key=raw_key, origin_domain=origin_header)
+        api_key_record = await verify_api_key(db, raw_key=raw_key)
         if not api_key_record:
             raise HTTPException(
                 status_code=401,
-                detail="App key, origin, approval, or gateway owner permission is invalid",
+                detail="API key is invalid, revoked, or its account is disabled",
             )
+        request.state.audit_app_id = api_key_record.authorized_app_id
         app = await db.get(AuthorizedApp, api_key_record.authorized_app_id)
         # FastAPI's lazy included routers keep the original route path relative.
         # The effective context carries its full template, including all prefixes.

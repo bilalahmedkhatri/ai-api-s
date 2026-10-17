@@ -165,7 +165,46 @@ async def reset_daily_counts(db: AsyncSession, provider: str | None = None) -> i
 # Key rotation logic
 # ---------------------------------------------------------------------------
 
-async def get_next_available_key(db: AsyncSession, provider: str, after_id: int | None = None) -> tuple[int, str] | None:
+def _provider_key_claim_statement(provider: str):
+    selected = (
+        select(ProviderAPIKey.id)
+        .where(
+            ProviderAPIKey.provider == provider,
+            ProviderAPIKey.is_active.is_(True),
+            (ProviderAPIKey.daily_limit.is_(None))
+            | (ProviderAPIKey.requests_today < ProviderAPIKey.daily_limit),
+        )
+        .order_by(ProviderAPIKey.total_count, ProviderAPIKey.requests_today,
+                  ProviderAPIKey.priority, ProviderAPIKey.id.desc())
+        .limit(2)
+        .with_for_update(skip_locked=True)
+    )
+    return (
+        update(ProviderAPIKey)
+        .where(ProviderAPIKey.id.in_(selected))
+        .values(total_count=ProviderAPIKey.total_count + 1,
+                requests_today=ProviderAPIKey.requests_today + 1)
+        .returning(ProviderAPIKey.id, ProviderAPIKey.encrypted_key,
+                   ProviderAPIKey.total_count, ProviderAPIKey.requests_today, ProviderAPIKey.priority)
+        .execution_options(synchronize_session=False)
+    )
+
+
+async def claim_provider_keys(db: AsyncSession, provider: str) -> list[str]:
+    """Atomically allocate up to two least-used eligible keys; return secrets only."""
+    try:
+        rows = (await db.execute(_provider_key_claim_statement(provider.strip().lower()))).all()
+        rows.sort(key=lambda row: (row.total_count, row.requests_today, row.priority, -row.id))
+        keys = [decrypt_token(row.encrypted_key) for row in rows]
+        await db.commit()
+        return keys
+    except Exception:
+        await db.rollback()
+        raise
+
+
+async def get_next_available_key(db: AsyncSession, provider: str, after_id: int | None = None,
+                                 *, reserve: bool = False) -> tuple[int, str] | None:
     """
     Returns (key_id, plain_api_key) of an available key. Priority-first by default;
     TTS supplies after_id to cycle eligible IDs. None means no usable key exists.
@@ -173,6 +212,8 @@ async def get_next_available_key(db: AsyncSession, provider: str, after_id: int 
     A key is 'available' when:
       - is_active = True
       - daily_limit is NULL OR requests_today < daily_limit
+    Query callers pass reserve=True to atomically consume one provider-request
+    slot before network I/O. Other callers retain the existing success counter.
     """
     result = await db.execute(
         select(ProviderAPIKey)
@@ -191,22 +232,37 @@ async def get_next_available_key(db: AsyncSession, provider: str, after_id: int 
         if k.is_within_limit:
             try:
                 plain = decrypt_token(k.encrypted_key)
-                return (k.id, plain)
             except Exception as exc:
                 logger.error("Failed to decrypt key id=%d: %s", k.id, exc)
                 continue
+            key_id = k.id
+            if reserve:
+                # Conditional UPDATE rechecks quota under the database row lock.
+                reserved = await db.execute(
+                    update(ProviderAPIKey).where(
+                        ProviderAPIKey.id == key_id, ProviderAPIKey.is_active.is_(True),
+                        (ProviderAPIKey.daily_limit.is_(None))
+                        | (ProviderAPIKey.requests_today < ProviderAPIKey.daily_limit),
+                    ).values(requests_today=ProviderAPIKey.requests_today + 1)
+                    .returning(ProviderAPIKey.id).execution_options(synchronize_session=False)
+                )
+                selected = reserved.scalar_one_or_none()
+                await db.commit()
+                if selected is None:
+                    continue
+            return (key_id, plain)
 
     logger.warning("No available API keys for provider=%s", provider)
     return None
 
 
-async def mark_key_used(db: AsyncSession, key_id: int) -> None:
-    """Increment requests_today and update last_used_at after a successful call."""
+async def mark_key_used(db: AsyncSession, key_id: int, *, reserved: bool = False) -> None:
+    """Update last_used_at; increment only if this call was not reserved already."""
     await db.execute(
         update(ProviderAPIKey)
         .where(ProviderAPIKey.id == key_id)
         .values(
-            requests_today=ProviderAPIKey.requests_today + 1,
+            requests_today=ProviderAPIKey.requests_today if reserved else ProviderAPIKey.requests_today + 1,
             last_used_at=datetime.datetime.now(datetime.UTC),
         )
     )

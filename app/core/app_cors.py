@@ -9,7 +9,7 @@ from app.db.database import AsyncSessionLocal
 from app.models.db_models import AuthorizedApp, User
 from app.services.app_access_service import normalize_origin
 
-APP_PREFIXES = ("audio", "query", "image", "video", "ingest", "media", "facebook")
+APP_PREFIXES = ("audio", "query", "generate", "image", "video", "ingest", "media", "facebook")
 ALLOWED_HEADERS = {"authorization", "content-type", "x-api-key", "x-app-origin", "cache-control"}
 
 
@@ -23,7 +23,9 @@ class AppCORSMiddleware(BaseHTTPMiddleware):
         try:
             normalized = normalize_origin(origin)
         except ValueError:
-            return JSONResponse({"detail": "Invalid app origin"}, status_code=403)
+            if request.method == "OPTIONS":
+                return JSONResponse({"detail": "Invalid app origin"}, status_code=403)
+            return await call_next(request)
         if request.method == "OPTIONS" and request.headers.get("access-control-request-method"):
             requested_method = request.headers["access-control-request-method"].upper()
             requested_headers = {h.strip().lower() for h in request.headers.get("access-control-request-headers", "").split(",") if h.strip()}

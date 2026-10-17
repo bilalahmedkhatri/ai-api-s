@@ -2,8 +2,10 @@
 
 import datetime
 import logging
+
 from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.db_models import AIModel, ModelWebsiteUsage
@@ -48,6 +50,9 @@ async def record_model_usage(
     completion_tokens: int,
     provider: str = "groq",
     is_free: bool = True,
+    *,
+    commit: bool = True,
+    usage_date: datetime.date | None = None,
 ) -> ModelWebsiteUsage:
     """
     Accumulates daily token usage and estimated cost for a given model and website origin.
@@ -64,43 +69,25 @@ async def record_model_usage(
     if not model.is_free:
         cost = (p_tokens / 1000.0 * model.prompt_price_per_1k) + (c_tokens / 1000.0 * model.completion_price_per_1k)
 
-    today = datetime.date.today()
+    today = usage_date or datetime.datetime.now(datetime.UTC).date()
     clean_origin = (website_origin or "unknown").strip().lower()
 
-    # Clean ORM pattern with row locking for safe atomic updates
-    stmt = (
-        select(ModelWebsiteUsage)
-        .where(
-            ModelWebsiteUsage.model_id == model.id,
-            ModelWebsiteUsage.website_origin == clean_origin,
-            ModelWebsiteUsage.usage_date == today,
-        )
-        .with_for_update()
-    )
-    res = await db.execute(stmt)
-    usage_row = res.scalar_one_or_none()
-
-    if usage_row:
-        usage_row.total_requests += 1
-        usage_row.prompt_tokens += p_tokens
-        usage_row.completion_tokens += c_tokens
-        usage_row.total_tokens += tot_tokens
-        usage_row.total_cost_usd += cost
-        usage_row.last_updated_at = datetime.datetime.now(datetime.timezone.utc)
-    else:
-        usage_row = ModelWebsiteUsage(
-            model_id=model.id,
-            website_origin=clean_origin,
-            usage_date=today,
-            total_requests=1,
-            prompt_tokens=p_tokens,
-            completion_tokens=c_tokens,
-            total_tokens=tot_tokens,
-            total_cost_usd=cost,
-        )
-        db.add(usage_row)
-
-    await db.commit()
-    await db.refresh(usage_row)
-
+    # An upsert also protects the first usage row of the day from insert races.
+    insert = pg_insert if db.get_bind().dialect.name == "postgresql" else sqlite_insert
+    statement = insert(ModelWebsiteUsage).values(
+        model_id=model.id, website_origin=clean_origin, usage_date=today,
+        total_requests=1, prompt_tokens=p_tokens, completion_tokens=c_tokens,
+        total_tokens=tot_tokens, total_cost_usd=cost,
+    ).on_conflict_do_update(
+        index_elements=["model_id", "website_origin", "usage_date"],
+        set_={"total_requests": ModelWebsiteUsage.total_requests + 1,
+              "prompt_tokens": ModelWebsiteUsage.prompt_tokens + p_tokens,
+              "completion_tokens": ModelWebsiteUsage.completion_tokens + c_tokens,
+              "total_tokens": ModelWebsiteUsage.total_tokens + tot_tokens,
+              "total_cost_usd": ModelWebsiteUsage.total_cost_usd + cost,
+              "last_updated_at": datetime.datetime.now(datetime.UTC)},
+    ).returning(ModelWebsiteUsage).execution_options(populate_existing=True)
+    usage_row = (await db.execute(statement)).scalar_one()
+    if commit:
+        await db.commit()
     return usage_row

@@ -1,66 +1,23 @@
-"""Model routing matrix and LiteLLM orchestration for 30B+ models.
-
-Intent → model selection:
-  coding / mathematics  → Qwen-2.5-Coder (primary) → Llama-3.3-70B (fallback)
-  general_knowledge/RAG → Llama-3.3-70B (primary) → Command-R-Plus (fallback)
-  creative_writing      → Llama-3.3-70B (primary) → Llama-3.1-8B (fallback)
-  general (fallback)    → Llama-3.3-70B (primary) → Llama-3.1-8B (fallback)
-
-All models accessed via API providers (Groq / OpenRouter).
-No local weights downloaded — purely API-based routing.
-
-Ponytail note:
-  - tenacity was spec'd but rejected (Step 5): litellm has built-in
-    fallbacks= and timeout= params that cover the same behaviour.
-  - Model roster is documented in MODELS.md for human review; no code
-    implements "automated HF leaderboard scanning" (Step 1 — YAGNI).
-"""
+"""DB-backed asynchronous chat routing; the separate vision helper stays compatible."""
 
 import logging
 import time
 from dataclasses import dataclass
 
 import litellm
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.db_models import AIModel
+from app.services.key_manager import get_next_available_key, mark_key_quota_exceeded, mark_key_used
+from app.services.query_telemetry import record_call
 
 logger = logging.getLogger(__name__)
-
-# ── Model roster ───────────────────────────────────────────────────────────────
-# Format: provider/model-name as understood by litellm.
-# Override individual entries via ROUTING_* env vars (see config.py).
-
-_QWEN_72B           = "groq/qwen-2.5-coder-32b"          # math + code primary
-_LLAMA_70B          = "groq/llama-3.3-70b-versatile"     # reasoning + creative primary
-_COMMAND_R          = "cohere/command-r-plus"             # RAG primary
-_OPENROUTER_FALLBACK = "openrouter/meta-llama/llama-3.3-70b-instruct:free"
-_GEMMA_4_31B        = "openrouter/google/gemma-4-31b-it:free"     # Gemma 4 31B free tier
-_GEMMA_4_26B        = "openrouter/google/gemma-4-26b-a4b-it:free" # Gemma 4 26B A4B free tier
-_GEMMA_3_27B        = "openrouter/google/gemma-3-27b-it:free"     # Gemma 3 27B free tier
-_LLAMA_8B           = "groq/llama-3.1-8b-instant"        # cheap fast fallback
-_GPT4O_MINI         = "gpt-4o-mini"                      # ultimate reliable fallback
-
+LLM_TIMEOUT = 15
+MAX_MODEL_ATTEMPTS = 4
+_SECOND_CHAT_MODEL = "replicate/openai/gpt-4o-mini"
 _PRIMARY_VISION = "gemini/gemini-flash-latest"
-_VISION_FALLBACKS = [
-    _GEMMA_4_31B,
-    "openrouter/free",
-]
-
-# ── Routing matrix ─────────────────────────────────────────────────────────────
-# key: intent_category (from semantic_router.py)
-# value: (primary_model, [fallback_models])
-ROUTING_MATRIX: dict[str, tuple[str, list[str]]] = {
-    "coding":           (_QWEN_72B,      [_LLAMA_70B, _LLAMA_8B, _GPT4O_MINI]),
-    "mathematics":      (_QWEN_72B,      [_LLAMA_70B, _LLAMA_8B, _GPT4O_MINI]),
-    "creative_writing": (_LLAMA_70B,     [_LLAMA_8B, _COMMAND_R, _GPT4O_MINI]),
-    "general_knowledge":(_LLAMA_70B,     [_COMMAND_R, _LLAMA_8B, _GPT4O_MINI]),
-    "general":          (_LLAMA_70B,     [_LLAMA_8B, _OPENROUTER_FALLBACK, _GPT4O_MINI]),
-    # Rule-engine categories that still need LLM
-    "math_task":        (_QWEN_72B,      [_LLAMA_70B, _GPT4O_MINI]),
-    "math_expression":  (_QWEN_72B,      [_LLAMA_70B, _GPT4O_MINI]),
-}
-_DEFAULT_PRIMARY  = _LLAMA_70B
-_DEFAULT_FALLBACKS = [_LLAMA_8B, _OPENROUTER_FALLBACK, _GPT4O_MINI]
-
-LLM_TIMEOUT = 15  # seconds — hard deadline before fallback triggers
+_VISION_FALLBACKS = ["openrouter/google/gemma-4-31b-it:free", "openrouter/free"]
 
 
 @dataclass
@@ -71,87 +28,110 @@ class LLMResult:
     completion_tokens: int | None
     cost_usd: float | None
     elapsed_ms: float
+    attempts: list[dict]
 
 
-def _pick_models(intent: str) -> tuple[str, list[str]]:
-    """Return (primary, fallbacks) for the given intent category."""
-    return ROUTING_MATRIX.get(intent, (_DEFAULT_PRIMARY, _DEFAULT_FALLBACKS))
+class ModelRoutingError(RuntimeError):
+    def __init__(self, attempts):
+        super().__init__("No available chat model completed the request")
+        self.attempts = attempts
+
+
+def _model_name(model):
+    prefix = model.provider.strip().lower() + "/"
+    return model.name if model.name.startswith(prefix) else prefix + model.name
+
+
+async def _pick_models(db, preferred):
+    rows = (await db.execute(select(AIModel).where(
+        AIModel.is_active.is_(True), AIModel.provider != "openrouter"
+    ))).scalars().all()
+    compatible = []
+    for model in rows:
+        name = _model_name(model)
+        if model.provider.strip().lower() == "openrouter":
+            continue
+        info = litellm.model_cost.get(name) or litellm.model_cost.get(model.name) or litellm.model_cost.get(name.split("/", 1)[1], {})
+        if name == _SECOND_CHAT_MODEL:
+            # This explicitly requested hosted GPT shares its known chat capability.
+            info = info or litellm.model_cost.get("gpt-4o-mini", {})
+        if info.get("mode") == "chat":
+            compatible.append(model)
+    compatible.sort(key=lambda m: (
+        _model_name(m) != preferred, not m.is_free,
+        m.prompt_price_per_1k + m.completion_price_per_1k, m.id,
+    ))
+    second = next((m for m in compatible if _model_name(m) == _SECOND_CHAT_MODEL), None)
+    if second is not None and compatible[0] is not second:
+        compatible.remove(second)
+        compatible.insert(1, second)
+    # Bound actual provider calls later; unavailable keys must not hide fallbacks.
+    return compatible
 
 
 async def call_llm(
     prompt: str,
     intent: str,
     *,
-    force_model: str | None = None,
+    db: AsyncSession,
+    force_model: str = "openai/gpt-4o-mini",
     max_tokens: int = 1024,
 ) -> LLMResult:
-    """
-    Call the appropriate 30B+ model for the intent, with automatic fallbacks.
-
-    Args:
-        prompt:      The full prompt string (query + optional RAG context).
-        intent:      Intent category from semantic_router or rule_engine.
-        force_model: Override routing matrix (e.g., from settings.default_llm_model).
-        max_tokens:  Maximum response tokens.
-
-    Returns:
-        LLMResult with answer, model name, token counts, and USD cost.
-    """
-    t0 = time.monotonic()
-    primary, fallbacks = _pick_models(intent)
-
-    if force_model:
-        primary = force_model
-        fallbacks = list(ROUTING_MATRIX.get(intent, (None, fallbacks))[1])
-
-    messages = [{"role": "user", "content": prompt}]
-
-    try:
-        resp = litellm.completion(
-            model=primary,
-            messages=messages,
-            max_tokens=max_tokens,
-            timeout=LLM_TIMEOUT,
-            fallbacks=[
-                {"model": m, "messages": messages, "max_tokens": max_tokens}
-                for m in fallbacks
-            ],
-            # litellm will retry fallbacks automatically on rate-limit / timeout.
-        )
-    except Exception as exc:
-        logger.error("All LLM models failed for intent=%s: %s", intent, exc, exc_info=True)
-        raise
-
-    elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
-    answer = resp.choices[0].message.content.strip()
-
-    # ── Token counting & cost ──────────────────────────────────────────────────
-    usage = getattr(resp, "usage", None)
-    prompt_tokens     = getattr(usage, "prompt_tokens", None)
-    completion_tokens = getattr(usage, "completion_tokens", None)
-
-    cost_usd: float | None = None
-    try:
-        cost_usd = litellm.completion_cost(completion_response=resp)
-    except Exception:
-        pass  # cost unavailable for some providers
-
-    model_used = getattr(resp, "model", primary)
-
-    logger.info(
-        "LLM response: model=%s intent=%s tokens=%s/%s cost=$%.6f elapsed_ms=%s",
-        model_used, intent, prompt_tokens, completion_tokens,
-        cost_usd or 0.0, elapsed_ms,
-    )
-
-    return LLMResult(
-        answer=answer,
-        model_used=model_used,
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        cost_usd=cost_usd,
-        elapsed_ms=elapsed_ms,
-    )
+    """Try active DB chat models with provider-scoped DB keys and sanitized telemetry."""
+    started = time.monotonic()
+    attempts = []
+    provider_calls = 0
+    for model in await _pick_models(db, force_model):
+        if provider_calls >= MAX_MODEL_ATTEMPTS:
+            break
+        name = _model_name(model)
+        attempt = {"model": name, "provider": model.provider, "status": "skipped"}
+        attempts.append(attempt)
+        key = await get_next_available_key(db, model.provider, reserve=True)
+        if not key:
+            attempt.update(error_type="NoEligibleKey", elapsed_ms=0)
+            continue
+        key_id, secret = key
+        provider_calls += 1
+        attempt_start = time.monotonic()
+        response = None
+        try:
+            response = await litellm.acompletion(
+                model=name, api_key=secret,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=max_tokens, timeout=LLM_TIMEOUT, num_retries=0,
+            )
+            answer = (response.choices[0].message.content or "").strip()
+            if not answer:
+                raise ValueError("Empty provider answer")
+        except Exception as exc:
+            telemetry = record_call("chat", name, attempt_start, response=response, error=exc)
+            attempt.update({key: telemetry[key] for key in ("prompt_tokens", "completion_tokens", "cost_usd")})
+            attempt.update(status="failed", error_type=type(exc).__name__,
+                           status_code=getattr(exc, "status_code", None),
+                           elapsed_ms=round((time.monotonic() - attempt_start) * 1000, 1))
+            logger.warning("Chat model attempt failed model=%s error_type=%s status=%s elapsed_ms=%s",
+                           name, attempt["error_type"], attempt["status_code"], attempt["elapsed_ms"])
+            if getattr(exc, "status_code", None) == 429:
+                await mark_key_quota_exceeded(db, key_id)
+            continue
+        telemetry = record_call("chat", name, attempt_start, response=response)
+        prompt_tokens, completion_tokens, cost = (telemetry[k] for k in ("prompt_tokens", "completion_tokens", "cost_usd"))
+        actual_model = getattr(response, "model", None) or name
+        attempt.update(status="completed", actual_model=actual_model,
+                       catalog_name=model.name, is_free=model.is_free,
+                       prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+                       cost_usd=cost, elapsed_ms=round((time.monotonic() - attempt_start) * 1000, 1))
+        try:
+            await mark_key_used(db, key_id, reserved=True)
+        except Exception as exc:
+            await db.rollback()
+            attempt["key_bookkeeping_error_type"] = type(exc).__name__
+            logger.warning("Key last-use bookkeeping failed model=%s error_type=%s", name, type(exc).__name__)
+        logger.info("Chat model completed model=%s intent=%s elapsed_ms=%s", name, intent, attempt["elapsed_ms"])
+        return LLMResult(answer, actual_model, prompt_tokens, completion_tokens, cost,
+                         round((time.monotonic() - started) * 1000, 1), attempts)
+    raise ModelRoutingError(attempts)
 
 
 def call_vision_llm(messages: list[dict], max_tokens: int = 512) -> tuple[str, str]:

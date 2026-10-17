@@ -10,6 +10,7 @@ from app.api.v1.audio.schemas import DynamicTTSRequest, RenewAudioUrlRequest
 from app.core.auth import get_current_api_key
 from app.db.database import get_db
 from app.models.db_models import AccessAPIKey, TTSChunk, TTSJob
+from app.services.tts.availability import LOCAL_KOKORO_UNAVAILABLE, is_local_kokoro
 from app.services.tts.constants import GEMINI_CHUNK_MAX_CHARS, KOKORO_CHUNK_MAX_CHARS
 from app.services.tts.generator import _ModelInfo
 from app.services.tts.jobs import _now, lease_deadline
@@ -181,6 +182,9 @@ async def generate_tts_endpoint(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Model '{req.model}' not found"
         )
+
+    if is_local_kokoro(model_obj.provider, model_obj.is_local):
+        raise HTTPException(400, LOCAL_KOKORO_UNAVAILABLE)
 
     provider_name = model_obj.provider.lower()
     if provider_name not in {'gemini', 'kokoro'}:
@@ -355,6 +359,9 @@ async def retry_tts_endpoint(job_id: str, background_tasks: BackgroundTasks,
         raise HTTPException(404, 'Job not found')
     if not _retryable(job):
         raise HTTPException(409, 'Job is completed, still running, or has no retry settings')
+    snapshot = json.loads(job.generation_json).get('model_snapshot', {})
+    if is_local_kokoro(snapshot.get('provider'), snapshot.get('is_local')):
+        raise HTTPException(400, LOCAL_KOKORO_UNAVAILABLE)
     from app.services.tts.jobs import claim_retry
     token = await claim_retry(db, job_id, app_id)
     if not token:

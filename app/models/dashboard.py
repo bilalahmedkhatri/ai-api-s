@@ -19,6 +19,11 @@ class Membership(Base):
     approved_by: Mapped[int | None] = mapped_column(ForeignKey("memberships.id"))
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     access_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    master_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    api_keys_unlocked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    api_project_id: Mapped[int | None] = mapped_column(
+        ForeignKey("authorized_apps.id"), unique=True, nullable=True
+    )
     permission_version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
