@@ -1,0 +1,26 @@
+{
+  "run_id": "20261024T060944Z-6844db",
+  "checks": {
+    "actual_patch_origin_denied": true,
+    "postgres_category_create_race": true,
+    "postgres_b2_upload_race": true,
+    "foreign_asset_and_category_rollback": true,
+    "admin_delete_denied": true
+  },
+  "additional_genzee_video_asset_id": 2,
+  "additional_genzee_video_category_id": 2,
+  "category_race_responses": [
+    {
+      "status": 200,
+      "created": false,
+      "id": 3,
+      "detail": null
+    },
+    {
+      "status": 201,
+      "created": true,
+      "id": 3,
+      "detail": null
+    }
+  ]
+}

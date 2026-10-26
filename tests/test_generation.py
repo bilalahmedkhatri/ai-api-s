@@ -94,11 +94,19 @@ async def test_unicode_multiline_prompt_only(setup_generation, monkeypatch, text
         "/api/v1/generate/", json={"prompt": text}, headers={**headers, "X-Request-ID": "trace.123"}
     )
     assert response.status_code == 200, response.text
-    assert response.json() == {"answer": text, "request_id": "trace.123", "finish_reason": "stop"}
+    assert response.json() == {
+        "answer": text,
+        "title": None,
+        "request_id": "trace.123",
+        "finish_reason": "stop",
+    }
     assert response.headers["x-request-id"] == "trace.123"
     assert response.headers["cache-control"] == "no-store"
     kwargs = call.await_args.kwargs
-    assert kwargs["messages"] == [{"role": "user", "content": text}]
+    assert kwargs["messages"] == [
+        {"role": "system", "content": generation.OUTPUT_INSTRUCTIONS},
+        {"role": "user", "content": text},
+    ]
     assert kwargs["num_retries"] == kwargs["max_retries"] == 0
     assert kwargs["fallbacks"] == [] and kwargs["no-log"] is True
     assert "tools" not in kwargs and "functions" not in kwargs
@@ -173,7 +181,7 @@ async def test_large_prompt_is_not_truncated_and_ids_are_bounded(setup_generatio
         headers={**headers, "X-Request-ID": "bad id" * 100},
     )
     assert response.status_code == 200
-    assert call.await_args.kwargs["messages"][0]["content"] == prompt
+    assert call.await_args.kwargs["messages"][-1]["content"] == prompt
     assert len(response.json()["request_id"]) == 36
     assert response.headers["x-request-id"] == response.json()["request_id"]
 

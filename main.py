@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 import sentry_sdk
 import uvicorn
 from app.api.v1.router import v1_router
+from app.blog.connections import BlogEngines
 from app.core.app_cors import AppCORSMiddleware
 from app.core.config import settings
 from app.core.logging_config import (
@@ -50,6 +51,7 @@ if _sentry_dsn and "..." not in _sentry_dsn:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    app.state.blog_engines = BlogEngines()
     archive_task = asyncio.create_task(archive_log_loop())
     maintenance_task = asyncio.create_task(maintenance_loop())
     query_task = asyncio.create_task(query_maintenance_loop())
@@ -65,6 +67,7 @@ async def lifespan(app: FastAPI):
             await maintenance_task
         with contextlib.suppress(asyncio.CancelledError):
             await query_task
+        await app.state.blog_engines.close()
         for handler in logging.getLogger().handlers:
             if isinstance(handler, _JsonlBatchHandler):
                 handler.seal()
@@ -94,6 +97,9 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """Log validation details on 422 Unprocessable Content to ease debugging."""
+    if request.url.path.startswith("/api/v1/dashboard/model-endpoints"):
+        return JSONResponse(status_code=422, content={"detail": "Invalid endpoint settings; use credential-free URLs and supported configuration"},
+                            headers={"Cache-Control": "no-store"})
     if request.url.path == "/api/v1/dashboard/api-keys":
         return JSONResponse(status_code=422, content={"detail": "Enter a valid key name and master key"},
                             headers={"Cache-Control": "no-store"})
@@ -101,16 +107,12 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         logger.warning("Query validation rejected request_id=%s", getattr(request.state, "request_id", None))
         return JSONResponse(status_code=422, content={"detail": "Invalid query request"},
                             headers={"Cache-Control": "no-store"})
-    logger.warning(
-        "Request validation error on %s %s: %s",
-        request.method,
-        request.url.path,
-        exc.errors(),
-        extra={"request_id": getattr(request.state, "request_id", None)},
-    )
+    logger.warning("Request validation rejected method=%s request_id=%s", request.method,
+                   getattr(request.state, "request_id", None))
     return JSONResponse(
         status_code=422,
-        content={"detail": exc.errors(), "body": exc.body},
+        content={"detail": "Invalid request fields"},
+        headers={"Cache-Control": "no-store"},
     )
 
 

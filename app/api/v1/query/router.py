@@ -17,6 +17,7 @@ from app.core.auth import get_current_api_key
 from app.db.database import get_db
 from app.models.db_models import AccessAPIKey, FinalResponse, Query, SearchResult
 from app.services.dispatcher import process_query
+from app.services.generation_telemetry import request_identity
 from app.services.query_maintenance import QUERY_TIMEOUT_SECONDS, account_query
 from app.services.query_telemetry import cost_summary, provider_calls
 
@@ -53,7 +54,8 @@ async def query_endpoint(
     q_row = Query(raw_query=req.query, input_type=req.input_type,
                   authorized_app_id=api_key.authorized_app_id)
     q_row.meta = {"request_id": getattr(request.state, "request_id", None),
-                  "api_key_id": api_key.id, "status": "processing"}
+                  "api_key_id": api_key.id, "status": "processing",
+                  **request_identity(request, api_key.authorized_app_id)}
     db.add(q_row)
     await db.commit()
     query_id = q_row.id

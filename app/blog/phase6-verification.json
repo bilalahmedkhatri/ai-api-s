@@ -1,0 +1,196 @@
+{
+  "completed_at": "2026-10-24T06:32:30.302358+00:00",
+  "scope": "local acceptance with configured databases/B2; deployment excluded by user",
+  "apps": {
+    "azeemlab": {
+      "status": "passed",
+      "test_posts": [
+        {
+          "id": 1,
+          "status": "archived",
+          "version": 4
+        },
+        {
+          "id": 2,
+          "status": "archived",
+          "version": 3
+        },
+        {
+          "id": 4,
+          "status": "archived",
+          "version": 3
+        }
+      ],
+      "verified_test_asset_ids": [
+        1,
+        2,
+        3
+      ],
+      "table_counts": {
+        "blog_posts": 3,
+        "blog_categories": 1,
+        "blog_assets": 3
+      }
+    },
+    "ailettergen": {
+      "status": "passed",
+      "test_posts": [
+        {
+          "id": 1,
+          "status": "archived",
+          "version": 4
+        }
+      ],
+      "verified_test_asset_ids": [
+        1
+      ],
+      "table_counts": {
+        "blog_posts": 1,
+        "blog_categories": 1,
+        "blog_assets": 1
+      }
+    },
+    "bondsgame": {
+      "status": "passed",
+      "test_posts": [
+        {
+          "id": 1,
+          "status": "archived",
+          "version": 4
+        }
+      ],
+      "verified_test_asset_ids": [
+        1
+      ],
+      "table_counts": {
+        "blog_posts": 1,
+        "blog_categories": 1,
+        "blog_assets": 1
+      }
+    },
+    "sikanderart": {
+      "status": "unconfigured_skipped"
+    },
+    "e_sahulat": {
+      "status": "unconfigured_skipped"
+    },
+    "genzee_video": {
+      "status": "passed",
+      "test_posts": [
+        {
+          "id": 1,
+          "status": "archived",
+          "version": 9
+        }
+      ],
+      "verified_test_asset_ids": [
+        1,
+        2,
+        3
+      ],
+      "table_counts": {
+        "blog_posts": 1,
+        "blog_categories": 3,
+        "blog_assets": 3
+      }
+    }
+  },
+  "checks": {
+    "missing_session_denied": true,
+    "foreign_origin_denied": true,
+    "azeemlab_image/png_upload": true,
+    "azeemlab_image/png_object_scope": true,
+    "azeemlab_image/png_public_bytes": true,
+    "azeemlab_image/png_retry": true,
+    "azeemlab_audio/wav_upload": true,
+    "azeemlab_audio/wav_object_scope": true,
+    "azeemlab_audio/wav_public_bytes": true,
+    "azeemlab_audio/wav_retry": true,
+    "azeemlab_video/mp4_upload": true,
+    "azeemlab_video/mp4_object_scope": true,
+    "azeemlab_video/mp4_public_bytes": true,
+    "azeemlab_video/mp4_retry": true,
+    "azeemlab_author_snapshot": true,
+    "azeemlab_draft_metadata": true,
+    "azeemlab_roundtrip": true,
+    "azeemlab_actual_list_contract": true,
+    "azeemlab_category_roundtrip": true,
+    "azeemlab_postgres_concurrent_version": true,
+    "postgres_concurrent_slug_collision": true,
+    "postgres_category_reuse_4": true,
+    "postgres_category_reuse_2": true,
+    "ailettergen_audio/wav_upload": true,
+    "ailettergen_audio/wav_object_scope": true,
+    "ailettergen_audio/wav_public_bytes": true,
+    "ailettergen_audio/wav_retry": true,
+    "ailettergen_author_snapshot": true,
+    "ailettergen_draft_metadata": true,
+    "ailettergen_roundtrip": true,
+    "ailettergen_actual_list_contract": true,
+    "ailettergen_category_roundtrip": true,
+    "ailettergen_postgres_concurrent_version": true,
+    "bondsgame_audio/wav_upload": true,
+    "bondsgame_audio/wav_object_scope": true,
+    "bondsgame_audio/wav_public_bytes": true,
+    "bondsgame_audio/wav_retry": true,
+    "bondsgame_author_snapshot": true,
+    "bondsgame_draft_metadata": true,
+    "bondsgame_roundtrip": true,
+    "bondsgame_actual_list_contract": true,
+    "bondsgame_category_roundtrip": true,
+    "bondsgame_postgres_concurrent_version": true,
+    "genzee_video_audio/wav_upload": true,
+    "genzee_video_audio/wav_object_scope": true,
+    "genzee_video_audio/wav_public_bytes": true,
+    "genzee_video_audio/wav_retry": true,
+    "genzee_video_author_snapshot": true,
+    "genzee_video_draft_metadata": true,
+    "genzee_video_roundtrip": true,
+    "genzee_video_actual_list_contract": true,
+    "genzee_video_category_roundtrip": true,
+    "genzee_video_postgres_concurrent_version": true,
+    "actual_patch_origin_denied": true,
+    "postgres_category_create_race": true,
+    "postgres_b2_upload_race": true,
+    "foreign_asset_and_category_rollback": true,
+    "admin_delete_denied": true,
+    "actual_contract_loaded": true,
+    "real_browser_image_upload": true,
+    "real_browser_save": true,
+    "archived_status_preserved": true,
+    "media_retention_verified": true,
+    "app_switching_isolated": true,
+    "mobile_no_horizontal_overflow": true,
+    "real_browser_save_persisted": true,
+    "real_browser_media_roundtrip": true,
+    "all_retained_assets_exist_in_b2": true,
+    "all_acceptance_sessions_revoked": true,
+    "all_test_posts_archived": true
+  },
+  "prior_interrupted_attempt_preserved": "phase6-first-run.json",
+  "published_test_posts": false,
+  "legacy_import_performed": false,
+  "browser": {
+    "scope": "real local admin and real configured DB/B2",
+    "actual_contract_loaded": true,
+    "real_browser_image_upload": true,
+    "real_browser_save": true,
+    "archived_status_preserved": true,
+    "media_retention_verified": true,
+    "app_switching_isolated": true,
+    "native_png_width": 1,
+    "native_wav_duration": 0.1,
+    "native_mp4_duration": 0.4,
+    "native_media_errors": false,
+    "mobile_viewport": 390,
+    "mobile_document_width": 378,
+    "horizontal_overflow": false
+  },
+  "verified_revoked_session_ids": [
+    21,
+    22,
+    23,
+    24
+  ],
+  "status": "passed"
+}

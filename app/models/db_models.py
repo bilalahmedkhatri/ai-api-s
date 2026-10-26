@@ -6,6 +6,7 @@ import json
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Float,
@@ -14,6 +15,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
     func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -112,6 +114,42 @@ class AIModel(Base):
         viewonly=True,
         lazy="selectin",
     )
+    endpoints: Mapped[list["ModelEndpoint"]] = relationship(back_populates="ai_model")
+
+
+class ModelEndpoint(Base):
+    """Shared execution configuration; identity/prices and secrets remain elsewhere."""
+
+    __tablename__ = "model_endpoints"
+    __table_args__ = (
+        UniqueConstraint("ai_model_id", "model_type", name="uq_model_endpoint_type"),
+        CheckConstraint("model_type IN ('chat','tts','image','video','embedding')", name="ck_endpoint_type"),
+        CheckConstraint("adapter IN ('litellm','http','local')", name="ck_endpoint_adapter"),
+        CheckConstraint("NOT (legacy_tts_model_id IS NOT NULL AND legacy_media_model_id IS NOT NULL)",
+                        name="ck_endpoint_legacy_source"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ai_model_id: Mapped[int] = mapped_column(ForeignKey("ai_models.id", ondelete="RESTRICT"), index=True)
+    model_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    adapter: Mapped[str] = mapped_column(String(16), nullable=False)
+    endpoint_url: Mapped[str | None] = mapped_column(String(2048))
+    api_base_url: Mapped[str | None] = mapped_column(String(2048))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    config_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    # Transitional links preserve voice/generation IDs until manual testing and retirement.
+    legacy_tts_model_id: Mapped[int | None] = mapped_column(ForeignKey("tts_models.id", ondelete="RESTRICT"), unique=True)
+    legacy_media_model_id: Mapped[int | None] = mapped_column(ForeignKey("media_models.id", ondelete="RESTRICT"), unique=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    ai_model: Mapped["AIModel"] = relationship(back_populates="endpoints", lazy="selectin")
+
+    @property
+    def config(self) -> dict:
+        return json.loads(self.config_json)
+
+    @config.setter
+    def config(self, value: dict) -> None:
+        self.config_json = json.dumps(value)
 
 
 class ModelWebsiteUsage(Base):
@@ -152,6 +190,7 @@ class AccessAPIKey(Base):
     key_prefix: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     hashed_key: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_internal: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default=false())
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -228,6 +267,7 @@ class User(Base):
     avatar_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     api_access_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    session_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default="0")
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -397,6 +437,9 @@ class ExtractedMedia(Base):
     __tablename__ = "extracted_media"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    authorized_app_id: Mapped[int | None] = mapped_column(
+        ForeignKey("authorized_apps.id"), nullable=True, index=True
+    )
     user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     template_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     item_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)

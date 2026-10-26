@@ -20,6 +20,7 @@ from app.api.v1.keys.router import router as keys_router
 from app.api.v1.media.router import router as media_router
 from app.api.v1.query.router import router as query_router
 from app.api.v1.video.router import router as video_gen_router
+from app.blog.router import router as blog_router
 from app.core.auth import get_current_api_key
 
 v1_router = APIRouter(prefix="/api/v1")
@@ -47,3 +48,5 @@ v1_router.include_router(customer_keys_router)
 v1_router.include_router(provider_models_router)
 
 v1_router.include_router(authorized_apps_router)
+
+v1_router.include_router(blog_router)

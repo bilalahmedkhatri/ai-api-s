@@ -14,6 +14,9 @@ class Membership(Base):
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), unique=True)
     email: Mapped[str] = mapped_column(String(255), unique=True)
     name: Mapped[str] = mapped_column(String(80), default="")
+    designation: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    avatar_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     role: Mapped[str] = mapped_column(String(16), default="viewer")
     status: Mapped[str] = mapped_column(String(16), default="pending")
     approved_by: Mapped[int | None] = mapped_column(ForeignKey("memberships.id"))
@@ -92,6 +95,11 @@ class EmailChallenge(Base):
 class ServiceCredential(Base):
     __tablename__ = "service_credentials"
     id: Mapped[int] = mapped_column(primary_key=True)
+    membership_id: Mapped[int | None] = mapped_column(ForeignKey("memberships.id"), unique=True)
+    authorized_app_id: Mapped[int | None] = mapped_column(ForeignKey("authorized_apps.id"))
+    access_api_key_id: Mapped[int | None] = mapped_column(
+        ForeignKey("access_apikey.id"), unique=True
+    )
     label: Mapped[str] = mapped_column(String(80), unique=True)
     kind: Mapped[str] = mapped_column(String(16))
     encrypted_value: Mapped[str] = mapped_column(Text)

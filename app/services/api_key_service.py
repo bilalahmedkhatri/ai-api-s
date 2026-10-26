@@ -8,7 +8,6 @@ import secrets
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.dashboard import Membership
 from app.models.db_models import AccessAPIKey, AuthorizedApp, User
 
 logger = logging.getLogger(__name__)
@@ -27,6 +26,7 @@ async def generate_api_key(
     authorized_app_id: int,
     *,
     commit: bool = True,
+    is_internal: bool = False,
 ) -> tuple[str, AccessAPIKey]:
     """
     Generate a new API key for a third-party client application.
@@ -35,7 +35,13 @@ async def generate_api_key(
     app = await db.get(AuthorizedApp, authorized_app_id)
     if app is None:
         raise ValueError("Authorized app not found")
-    owner = await db.get(User, app.owner_user_id)
+    from app.services.access_policy import app_membership
+    from app.services.customer_keys import locked_member
+    membership = await app_membership(db, app)
+    if membership:
+        await locked_member(db, membership.id)
+    owner = (await db.execute(select(User).where(User.id == app.owner_user_id)
+                             .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
     if not app.is_active or not app.is_approved or not owner or not owner.is_active or not owner.api_access_enabled:
         raise ValueError("App and its gateway owner must have API permission before issuing a key")
     raw_token = secrets.token_urlsafe(32)
@@ -50,6 +56,7 @@ async def generate_api_key(
         key_prefix=key_prefix,
         hashed_key=hashed,
         is_active=True,
+        is_internal=is_internal,
     )
     db.add(api_key_record)
     if commit:
@@ -66,6 +73,8 @@ async def verify_api_key(
     db: AsyncSession,
     raw_key: str,
     origin_domain: str | None = None,
+    *,
+    touch: bool = True,
 ) -> AccessAPIKey | None:
     """
     Verify a raw API key against the database.
@@ -98,25 +107,28 @@ async def verify_api_key(
         return None
 
     # Update last_used_at
-    record.last_used_at = datetime.datetime.now(datetime.UTC)
-    await db.commit()
+    if touch:
+        record.last_used_at = datetime.datetime.now(datetime.UTC)
+        await db.commit()
 
     return record
 
 
 async def customer_project_active(db, app_id: int) -> bool:
-    """Legacy app grants remain valid; customer projects also require live membership."""
-    membership = (await db.execute(
-        select(Membership).where(Membership.api_project_id == app_id)
-    )).scalar_one_or_none()
+    """All apps of a dashboard owner inherit the live membership restriction."""
+    from app.services.access_policy import app_membership
+
+    app = await db.get(AuthorizedApp, app_id)
+    if not app:
+        return False
+    membership = await app_membership(db, app)
     if membership is None:
         return True
     from app.services.dashboard import aware, now
 
-    app = await db.get(AuthorizedApp, app_id)
     return bool(
         app and membership.user_id == app.owner_user_id
-        and membership.status == "approved" and membership.api_keys_unlocked
+        and membership.status == "approved" and membership.role in {"admin", "operator", "viewer"}
         and (membership.access_expires_at is None or aware(membership.access_expires_at) > now())
     )
 
@@ -137,6 +149,6 @@ async def revoke_api_key(db: AsyncSession, key_id: int) -> bool:
 
 async def list_api_keys(db: AsyncSession) -> list[AccessAPIKey]:
     """Retrieve all AccessAPIKey records."""
-    stmt = select(AccessAPIKey).order_by(AccessAPIKey.created_at.desc())
+    stmt = select(AccessAPIKey).where(AccessAPIKey.is_internal.is_(False)).order_by(AccessAPIKey.created_at.desc())
     result = await db.execute(stmt)
     return list(result.scalars().all())

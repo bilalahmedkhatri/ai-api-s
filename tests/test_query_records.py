@@ -46,6 +46,26 @@ async def records(chat_db, monkeypatch):
     return chat_db, headers
 
 
+async def test_external_reference_and_attempt_identity_remain_app_scoped(records):
+    db, headers = records
+    results = []
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        for app_headers in headers:
+            response = await client.post("/api/v1/query/", json={"query": "Calculate 2+2"}, headers={
+                **app_headers, "X-External-User-ID": "customer-7", "Cache-Control": "no-cache"})
+            assert response.status_code == 200
+            record = (await client.get(f"/api/v1/query/requests/{response.json()['query_id']}", headers=app_headers)).json()
+            assert record["request"]["external_user_id"] == "customer-7"
+            assert record["request"]["attempts_complete"] is True
+            call = record["request"]["provider_calls"][0]
+            assert call["provider"] and call["actual_model"] == "gpt-4o-mini-actual"
+            assert call["attempt_id"] and call["operation_id"] == "chat"
+            assert call["started_at"] <= call["finished_at"]
+            results.append(record)
+        assert results[0]["authorized_app_id"] != results[1]["authorized_app_id"]
+        assert (await client.get(f"/api/v1/query/requests/{results[0]['query_id']}", headers=headers[1])).status_code == 404
+
+
 async def test_record_api_ownership_pagination_and_usage(records):
     db, headers = records
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

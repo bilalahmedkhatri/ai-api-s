@@ -5,7 +5,42 @@
 > **Package Manager:** uv
 > **Latest validation (2026-10-18):** 333 isolated backend tests passed after dependency cleanup; retained-library imports and offline lockfile consistency passed. Older counts below are historical, not current totals.
 
+## Multi-app blog status and recheck (2026-10-24)
+
+- This blog rollout is separate from the request-history/telemetry phases below. Backend code belongs in `app/blog/`; the active Next.js editor is `D:/voice_generator_free/admin_dashboard`, not this repository's legacy Remix `admin` checkout. Reuse the existing dashboard session, Origin, page/component grants and server-only transport.
+- Blog targets come from the independent server-owned catalog, never `authorized_apps`: azeemlab, ailettergen, bondsgame, sikanderart, e_sahulat and genzee_video. The first, second, third and sixth have configured databases; Sikander Art/E Sahulat remain unconfigured. Each target stores its own posts/categories/assets under the same versioned `blog_0001` schema. Never fall back to the central database or migrate on startup/request.
+- Keep slugs and grounded canonical/OG/Twitter/BlogPosting metadata backend-owned. Store validated Tiptap JSON only, not HTML/Base64 copies. Resolve categories in the selected app DB. Snapshot the existing membership/user name, designation and safe avatar into the post; no separate author table or central-user FK in app DBs. Preserve optimistic versions, published slug/locale stability and separate app/create/update/publish grants. No post/registered-asset DELETE endpoint, including for admins.
+- Admin backend uploads to public B2 `blogPost001` under `blogs/<app_key>/<UUID>.<extension>`; consumer apps need no upload endpoints. Dedicated `BLOG_B2_*` credentials and `BLOG_<APP>_DATABASE_URL` stay in the backend environment. Use stable public download URLs, not signed downloads; existing private audio/log storage remains separate. Preserve upload-token retries, verified asset references, bounded media validation and exact-key orphan safeguards.
+- Phases 1-5 are implemented for the four configured apps. Prior Phase 6 local write/browser acceptance recorded 70 passing checks, but the subsequent fresh recheck found unresolved issues. Do not present that historical receipt as unconditional current acceptance or production/deployment proof.
+- **Open high-priority defect:** ordinary BondsGame connections repeatedly raise SQLSTATE `42P05`, `DuplicatePreparedStatementError`, through its configured pooler. `app/blog/database.py` currently uses NullPool without unique prepared-statement names. A temporary read-only diagnostic using UUID-based names passed; application code/configuration was not changed. Address pooler compatibility and repeat checks through the actual connector before clearing this issue. One successful schema/connection retry does not establish reliability; do not hide it with automatic write retries.
+- **Open editor gaps:** internal sidebar navigation lacks unsaved-edit protection; category suggestions and cover choices load only the first 100 rows; the DB editor lacks several prior toolbar controls (strike, inline code, ordered list, blockquote, code block, horizontal rule). Existing-media selection is an additional improvement; the current picker uploads only. Reconcile stale README current-status text separately. These findings are documented, not fixed.
+- Fresh recheck: 50 isolated backend tests, 63 offline blog tests and 43 Next frontend tests passed, plus typecheck/build/focused ESLint/Ruff. All four schemas verified; all eight retained B2 objects matched size/MIME (the BondsGame asset used the temporary diagnostic connection). This does not clear ordinary-connector failures. Prior acceptance sessions 21-24 remain revoked.
+- Data snapshot at recheck: AzeemLab post ID 1 is published/version 5; the other five labelled acceptance posts remain archived. Do not automatically rearchive, delete or republish these records based on the older report; inspect current state before any mutation. The recheck changed no app data, permissions or application code.
+- Deployment and consumer rendering/sitemap/cache integration remain deferred by user scope. Legacy localStorage drafts remain untouched; an explicit import flow is not implemented. Real Google login/limited-member provisioning, load tests and every supported codec are not covered by this recheck. Do not run `app/blog/acceptance*.py --run-live` as regression tests: those operator tools can create data/sessions.
+- Evidence: [recheck](admin/output/BLOG_PHASES_RECHECK.md), `admin/output/blog-b2-recheck.json`, `admin/output/blog-bondsgame-diagnostic.json`, and historical [local acceptance](app/blog/PHASE6_ACCEPTANCE.md). No secrets belong in these reports.
+
+## Deferred log findings (2026-10-19)
+
+- User requested documentation only; discuss these findings before implementing fixes. The supplied local logs are evidence of individual runs, not a complete provider/storage acceptance test.
+- Direct-generation repair returned HTTP 502 with `output_truncated` at 12:28:10 after earlier successful Groq `groq/openai/gpt-oss-120b` calls. The incomplete-output guard rejected the repair result. Review output budget, prompt size and repair-stage requirements; do not label this a TTS failure or silently increase budgets/retries. No fix or live retest is recorded here.
+- Query and TTS maintenance repeatedly logged `deferred error_type=gaierror` between 12:39 and 13:07. This indicates hostname resolution failure; the exact hostname is absent from the sanitized logs. Database DNS/connectivity is a first investigation target, not a confirmed root cause. Both loops already catch failures and retry on their interval. Later successful requests do not establish a permanent fix. Investigate connection/DNS diagnostics without recording credentials or full database URLs.
+- Historical finding: `/requests` previously read only query/final records. Phase 2/3 now connect the existing query/TTS/media tables through shared admin history APIs and the Remix UI; no job duplication/backfill or legacy table removal. Missing metrics/attribution remain explicit, and incomplete TTS provider attempts remain future telemetry work, not evidence of synthesis failure.
+- Phases 1–3 completed locally on 2026-10-19 and Phase 4 on 2026-10-20; Phase 5 supported-flow telemetry completed locally on 2026-10-20; Phase 6 acceptance remains pending. Shared SQL UNION/filter logic in `request_history.py` drives admin `/dashboard/requests`, `/requests/summary`, `/requests/{record_id}`. Remix `request-records.server.ts` now feeds the existing `/requests` UI; obsolete query-only helper was renamed after reference checks. Reuse DataTable/Field/Submit/loading/Notice/cards/badges/error boundary and preserve admin/session/no-store controls. URL filters survive pagination/detail links; UTC calendar dates convert on the server to half-open API dates. Literal ID/model/provider search is SQL-filtered and shared by list/summary, never a browser-page-only search. Detail failures preserve the list except 401/403; old query_id bookmarks map to composite IDs. Keep old backend query APIs intact. Do not infer frontend-user/app identity from backend owners, detailed TTS provider calls from counters, or missing cost/timing. Failed history retains observed usage; customer zero is policy-derived, not a reconciled ledger. Reads never write usage, call providers/storage, renew URLs or expose raw configuration/credentials. Preserve native IDs/statuses, legacy tables and Phase 1 telemetry gaps. Phase 3 checks: typecheck/build, 25 frontend tests and 14 isolated history tests passed; browser checks used fabricated data, not configured DB/provider acceptance. See README for the browser-injected hydration-warning limitation.
+
+- Phase 4: `/requests/summary` includes bounded daily UTC cohorts and recorded metric/sample counts from the shared filtered SQL source. Preserve null metrics versus zero requests, measured-sample weighted totals and a shared PostgreSQL timezone expression in SELECT/GROUP BY. The Remix loader fetches list/summary with identical date boundaries, validates summary data using existing Zod and preserves the table on graph failures except auth denial; `view=table` skips aggregation. Generic `components/chart.tsx` is reused by requests/Overview. User requirement: ALWAYS render visible numeric labels on recorded points and bars, never tooltip-only; dense ranges scroll with all labels. Model/provider/type/status bars count parent records, not attempts. Keep scopes/units/coverage and failed-history billing separation. Checks: 31 frontend and 21 isolated history/Overview tests, typecheck/build and targeted lint/diff passed; configured DB/provider/deployment acceptance remains separate.
+
+## Phase 5 telemetry rules (2026-10-20)
+
+- Reuse existing query metadata and server-owned `_telemetry` inside TTS generation JSON/media extra-parameter JSON. No schema/table retirement or new billing policy. Media parameters live under `parameters`; raw request extras remain the source of provider payloads. Snapshots retain execution model/provider/type/app; catalog edits never rewrite history. Preserve legacy incomplete coverage.
+- `generation_telemetry.py` commits an attempt start immediately before outbound I/O and a safe terminal outcome afterwards. Eligibility skips, polling/downloads and merge/storage are not extra generation attempts. Gemini internal retries have separate attempt IDs under a stable chunk operation. Replicate outputs are separate operations; wait for all started siblings before parent finalization. Never infer these events from chunk counters.
+- Short row locks merge JSON attempts; TTS sink writes are fenced by current run token and processing status. Preserve prior failures on retry. Never record secret keys, payloads, result/poll URLs or exception messages. Incomplete/unfinished persisted attempts stay incomplete, not invented zero usage. Audio token costs must not use chat prices; unknown costs stay null. Known subtotal and customer billing remain separate; failed/cancelled/rejected customer tokens stay zero.
+- TTS terminal timing is original-submission to latest terminal wall time, including retry waiting. Never use updated_at or summed parallel latency. Active retries have no finalized duration. Optional X-External-User-ID is an authenticated app's opaque server-provided reference, limited to 128 non-control characters; scope it with the verified app ID, never treat it as users/memberships identity or an access grant. No CORS expansion or automatic frontend identity mapping.
+- Keep query token graphs scoped to latest final responses. Attempt detail now exposes safe operation IDs/timestamps and recorded provider usage. Legacy snapshots/attempts stay unknown; no history-read writes. Phase 6 must verify real providers/prices, PostgreSQL concurrent writes/load and deployed/browser behavior. Media hard-stop recovery, rejection-parent coverage, invoice reconciliation, indexed workflow/user fields and a lossless event store are separate design work. Two JSON writes per outbound invocation are deliberate; measure growth before a new event table.
+- Validation: 297 isolated backend tests across focused/retained-path suites, 31 frontend tests, admin typecheck/build and targeted Ruff pass. No real generation, billing writes, grants or schema changes. Do not claim provider or PostgreSQL write/load acceptance from mocks/read-only smoke.
+
 ## Lightweight gateway status (2026-10-18)
+
+- PostgreSQL history UNION: use SQL `NULL`, not one shared bound `None`, across differently typed missing fields. asyncpg otherwise infers a float bind for boolean fields and rejects list/summary. Keep the asyncpg compilation regression; SQLite execution alone does not catch this. Read-only configured PostgreSQL list/summary both returned 80 parents after the correction on 2026-10-20; 22 isolated history/analytics tests passed. No schema or data changes.
 
 - Removed gateway dependencies: `openai-whisper`, `kokoro-onnx`, `gradio-client`.
   `pyproject.toml` and `uv.lock` are updated; the gateway environment was synced.
@@ -30,16 +65,103 @@
 
 See [INFERENCE_RELOCATION.md](INFERENCE_RELOCATION.md) for scope and worker boundaries.
 
+## Unified model endpoint transition (2026-10-18)
+
+- Keep ai_models as canonical identity/provider/pricing and provider_api_keys as the shared provider pool. New model_endpoints stores model FK, type, adapter, full URL, optional LiteLLM base, settings, active flag and created/updated timestamps; never duplicate identity/pricing or raw credentials there. The key link remains the existing provider-based association, not a key-specific FK.
+- This is an additive/manual-validation phase: DO NOT remove tts_models, media_models, voices, history, snapshots or their current FK links. New nullable legacy links preserve IDs. New registrations create compatibility shells; loaders overlay new configuration without dirtying source ORM rows. Explicitly disabled linked configurations fail closed. Later table retirement requires the user's manual acceptance and a separate rewire/migration.
+- Migration e610a2c947bf was applied/verified on configured PostgreSQL on 2026-10-18: 4 TTS + 5 media endpoints, 9 canonical imports, timestamps, unchanged old model rows/voice mappings/key identities/history and existing catalog prices/status. No grants changed. Unknown chat/embedding capabilities and URLs were not invented; imported pricing needs review. Backend deployment/restart is separate.
+- Reuse the existing admin session/Origin/audit/no-store controls for GET/POST/PUT dashboard/model-endpoints. No delete route in this phase. Reject inline secrets, invalid settings and identity/type reassignment. Keep URL base separate from complete operation URL for LiteLLM.
+- Query/direct chat use the shared selector/base options. TTS/media retain existing handlers, local-inference restrictions and old-job snapshots. Media reserves one existing provider-key slot per generation submission and serializes only shared-session DB work, never network calls; polling reuses its key. Preserve explicit legacy environment fallback pending manual credential testing. Endpoint storage does not add unsupported provider handlers. Semantic embedding selection still uses EMBEDDING_MODEL.
+- See README's manual acceptance checklist. Run isolated migration/URL/key/voice/history/authorization regressions; no real-provider generation as part of regression tests.
+
 ## App authorization and ownership rules
 
 - Gateway owners belong exclusively to this service's `users` table. Never map a frontend user ID into `owner_user_id`.
-- Every protected app endpoint must use `get_current_api_key`: active app-bound key, exact registered origin, active/approved app, active owner with `api_access_enabled`, and matching method/route permission.
+- Every protected app endpoint must use `get_current_api_key`: active app-bound key, active/approved app, active owner with `api_access_enabled`, and matching method/route permission. Current service-key authentication does not require Origin/X-App-Origin; optional registered-origin browser CORS remains separate.
 - Origin headers are claims, not proof of identity. The server-side app secret authenticates the app. Never expose keys in browser bundles, URLs, logs or documentation.
 - Facebook connections and publishing are scoped by `authorized_app_id`. Reconnect legacy unassigned tokens; never assign them automatically or accept a caller-supplied backend owner.
-- App authorization does not replace the frontend's own session and per-user ownership checks. TTS job creation/status/retry/URL renewal are app-scoped. Legacy unassigned TTS jobs fail closed; extracted media still requires future app-level isolation.
+- App authorization does not replace the frontend's own session and per-user ownership checks. TTS job creation/status/retry/URL renewal and extracted media are app-scoped. Legacy unassigned jobs/media fail closed. Backend user CRUD and rollout rules are in `docs/USER_ACCESS.md`; reuse the shared operation policy for dashboard execution and direct API keys. Do not restore master-key activation or infer missing grants.
 - Use `scripts/bootstrap_genzee_apps.py` for repeatable GenZee setup. Validate the existing Google owner and registered route templates before changing permissions. Reuse app registrations and saved active keys; reject conflicting origin ownership.
 - Authorization revision: `a71c942e106b`; live-preview head: `f53c9e012d74` after checkpoint revision `e42b8d901c63`. Run regressions with isolated databases and mocked providers, never against configured production data.
 - Read [APP_ACCESS.md](APP_ACCESS.md) for provisioning, current registration metadata, revocation and deployment requirements.
+
+## Prompt-only generation and shared records (2026-10-18)
+
+- Use the separate `POST /api/v1/generate/` route for a complete Next.js-built
+  prompt. Accept only `{"prompt": "..."}`; reject extra fields, blank text and
+  invalid Unicode. Return `answer`, nullable `title`, `request_id`, and `finish_reason` (`stop` only
+  for an explicit provider stop, otherwise `unknown`). Preserve prompt/answer
+  Unicode, whitespace and line breaks. Do not route through query search,
+  retrieval, tools, RAG instructions, caches or content-repair calls.
+- For initial cover letters, request optional title metadata in the same provider
+  call using the server-owned JSON transport envelope in `generation_output.py`.
+  Keep the original user prompt unchanged. Always include top-level `title` as a
+  string or null: 3–7 lexical words, at most 80 NFC-normalized Unicode code points,
+  in the requested output language. Ground substantive words in exact supplied
+  role/company values; reject contact data, applicant-name sources and invented
+  words/entities. Unverifiable translations/metadata fall back to null. No extra
+  provider call or new required request field is allowed for titles.
+  Parse the envelope so answer/persisted output contains the letter only. Invalid
+  title metadata must not reject a usable answer. A fully closed JSON answer can
+  survive truncated optional trailing metadata with title null and public finish
+  reason unknown; incomplete answer strings and plain truncated text still fail.
+  Review/repair and other tasks may omit title metadata. Save validated title in
+  existing FinalResponse metadata, without new tables/columns. Include the system
+  envelope instructions in context-budget checks. Next.js owns conversation.title:
+  apply a valid AI title only after the first successful generation, preserve manual
+  renames and retain the existing prompt-derived fallback for null/invalid titles.
+  Optional-title evidence (2026-10-18): 187 selected isolated tests passed, including
+  37 title tests; mocked transport/validation/storage is separate from live language
+  quality and frontend conversation integration. See `tests/test_generation_titles.py`.
+- Reuse the server-controlled DB chat selector, provider adapters and atomic
+  provider-key reservations. The client cannot choose models, URLs, credentials
+  or system prompts. Cap actual provider calls at four, disable SDK/LiteLLM
+  retries, and stop automatic fallback after ambiguous timeout/connection loss.
+  Refusal, empty/malformed output and known truncation must remain explicit errors.
+- **No separate generation-record table:** reuse `queries` (`Query`) and
+  `final_responses` (`FinalResponse`) with `request_type: "generate"` in metadata.
+  Commit the verified app/key-owned processing row before provider work; save
+  full validated prompt, available answer/partial text, internal model, tokens,
+  cost estimates, attempts, normalized finish/error status and duration. Do not
+  create dummy search rows. Failed partial text must never become a successful
+  generation response. Never store secret headers, raw provider errors or reasoning.
+- Reuse existing query history APIs and the admin `/requests` page for both
+  request types. Enforce verified `authorized_app_id` ownership in list/detail
+  SQL: customer A must never read customer B's records. Authorized admins can
+  read all records through the existing admin-only dashboard handlers; ordinary
+  dashboard members cannot. Legacy/unverified rows stay unassigned. A shared
+  server key identifies an app, so Next.js must separately enforce end-user
+  session/ownership checks; frontend user IDs must not become gateway owner IDs.
+- Exclude generation rows in the query DB-cache SQL before its ten-row limit.
+  Keep query POST/search/cache behavior otherwise compatible. Generation reads
+  and writes no query cache, even when prompts or request IDs repeat.
+- Finalize failure, deadline and cancellation records consistently. Reuse shared
+  body-omitting rejection audits, request-local provider telemetry and the existing
+  30-second maintenance/accounting loop. Completed generation usage is pending
+  until the atomic usage-upsert/recorded-marker transaction succeeds. Failed or
+  cancelled requests never add successful usage; unknown provider cost stays null.
+  Existing stale-row recovery marks old processing requests failed without
+  repeating generation. These statistics do not deduct frontend credits.
+- Defaults: 32,768 prompt code points, 524,288 body bytes, 2,048 output tokens,
+  45-second processing deadline, 20 seconds per provider call, up to 10 seconds
+  for shielded DB finalization, four concurrent generation handlers and
+  30 requests/minute per client IP/process. Keep `GENERATION_*` settings and
+  sufficient provider context/output checks; never silently truncate input.
+  Process-local bounds are not distributed quotas. Request IDs are tracing only.
+- Regression evidence (2026-10-17): **150 selected isolated backend tests passed**,
+  including 41 generation and 16 shared-record tests; targeted lint/format/diff
+  checks passed. Providers were mocked, not live writing-quality evaluations.
+  This is a scoped historical result, separate from later dependency-cleanup
+  validation totals. Do not claim production persistence or deployment from it.
+- Remaining rollout: restart/deploy the backend, configure an eligible active
+  model/provider key, verify the generation and history GET grants for each
+  intended app, update the Next.js adapter/limits, and perform separately
+  authorized live provider/history checks. This feature adds no table/column or
+  migration; existing checkout schema requirements still apply. Never deploy or
+  make paid live calls merely to update documentation.
+
+See [GENERATION_API.md](GENERATION_API.md) for the full contract, errors, settings,
+test command and deployment boundaries.
 
 ## Query reliability
 

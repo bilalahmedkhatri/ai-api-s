@@ -15,6 +15,12 @@ from sqlalchemy import or_, select, update
 from app.core.config import settings
 from app.db.database import AsyncSessionLocal
 from app.models.db_models import TTSChunk, TTSJob
+from app.services.generation_telemetry import (
+    attempt_summary,
+    object_data,
+    persist_attempt,
+    telemetry_scope,
+)
 from app.services.media_extractor import get_b2_session
 from app.services.tts.audio_utils import get_wav_stats, merge_wav_bytes
 from app.services.tts.generator import generate_dynamic_speech
@@ -72,6 +78,20 @@ def _validate_audio(audio):
 
 async def _job_update(job_id, token, **values):
     async with AsyncSessionLocal() as db:
+        if values.get('status') in {'completed', 'failed'}:
+            job = (await db.execute(select(TTSJob).where(
+                TTSJob.job_id == job_id, TTSJob.run_token == token, TTSJob.status == 'processing',
+            ).with_for_update())).scalar_one_or_none()
+            if job is None:
+                raise RuntimeError('Worker lease no longer owned')
+            data = object_data(job.generation_json)
+            telemetry = data.setdefault('_telemetry', {})
+            finished = _now()
+            created = job.created_at.replace(tzinfo=datetime.UTC) if job.created_at.tzinfo is None else job.created_at
+            telemetry.update(finished_at=finished.isoformat(),
+                             duration_ms=round((finished - created).total_seconds() * 1000, 1))
+            telemetry.update(attempt_summary(telemetry))
+            values['generation_json'] = json.dumps(data)
         result = await db.execute(update(TTSJob).where(
             TTSJob.job_id == job_id, TTSJob.run_token == token,
             TTSJob.status == 'processing',
@@ -149,6 +169,12 @@ async def process_tts_job(job_id, model_name=None, text=None, voice=None, lang=N
     heartbeat = asyncio.create_task(_heartbeat(job_id, run_token))
     tasks = []
     group = None
+    telemetry_lock = asyncio.Lock()
+
+    async def save_attempt(event):
+        async with telemetry_lock:
+            await persist_attempt(AsyncSessionLocal, TTSJob, [TTSJob.job_id == job_id,
+                TTSJob.run_token == run_token, TTSJob.status == 'processing'], 'generation_json', event)
 
     async def synthesize(chunk):
         index, chunk_text, state, key = chunk
@@ -160,11 +186,12 @@ async def process_tts_job(job_id, model_name=None, text=None, voice=None, lang=N
                                 attempts=TTSChunk.attempts + 1, error_message=None)
             try:
                 logger.info('TTS chunk started job=%s index=%d provider=%s', job_id, index, provider)
-                audio, _ = await generate_dynamic_speech(
-                    model_name=model['name'], text=chunk_text, voice=generation['voice'],
-                    lang=generation['lang'], speed=generation['speed'],
-                    extra_params=generation['extra_params'], provider=provider, model_snapshot=model,
-                )
+                with telemetry_scope(save_attempt, model=model['name'], provider=provider, operation_id=f'chunk:{index}'):
+                    audio, _ = await generate_dynamic_speech(
+                        model_name=model['name'], text=chunk_text, voice=generation['voice'],
+                        lang=generation['lang'], speed=generation['speed'],
+                        extra_params=generation['extra_params'], provider=provider, model_snapshot=model,
+                    )
                 _validate_audio(audio)
                 key = f'tts_audio/chunks/{job_id}/{run_token}/{index:04d}.wav'
                 await _put(key, audio)

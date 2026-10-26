@@ -21,15 +21,56 @@ preserved. URLs in prompt text remain text: nothing fetches or retrieves them.
 Successful response:
 
 ```json
-{"answer":"Generated text\nwith preserved line breaks","request_id":"nextjs-123","finish_reason":"stop"}
+{"answer":"Complete cover-letter text...","title":"Frontend Developer — Azeemlab","request_id":"nextjs-123","finish_reason":"stop"}
 ```
 
-`answer` is non-empty provider text, returned verbatim, without another model or
-backend formatting. `stop` means the provider explicitly reported normal stop;
+`answer` is the non-empty requested text extracted from the provider envelope,
+without another model or backend rewriting. Plain-text responses are preserved.
+`stop` means the provider explicitly reported normal stop;
 `unknown` means it supplied usable text without a recognized completion status.
-Unknown does not guarantee completeness. Known length truncation, refusal and
+Unknown does not guarantee completeness. Known answer truncation, refusal and
 tool requests fail instead of returning successful partial text. No reasoning,
 model identity, raw provider payload or usage-accounting claim is returned.
+
+### Optional cover-letter title
+
+The response always includes `title: string | null`; the request remains exactly
+`{"prompt":"..."}`. There is no required role/company/language field. A server-owned
+system message asks the same provider call for a JSON transport envelope with
+`answer`, optional `title` and internal `title_sources` (verbatim role/company
+evidence). The user's final prompt is unchanged. This does not add a search,
+quality-review, repair or second title-generation call.
+
+For initial cover letters, the model is instructed to use the requested output
+language and only the supplied job role/employer, never applicant/contact details.
+The backend checks 3–7 lexical words (a standalone em dash is not a word), at most
+80 NFC-normalized Unicode code points, single-line text without control/markup or
+contact data, exact role/company evidence in the prompt, and substantive words
+grounded in those values plus ordinary English/Russian/Spanish/French/Portuguese
+connectors. Unverifiable translations, invented words, applicant-name sources,
+missing evidence and invalid metadata produce null rather than another model
+call. These conservative checks may discard a plausible title; multilingual
+quality still requires live evaluation. The letter's Unicode/line breaks remain
+unchanged and its text contains no transport JSON or added title.
+
+Missing/invalid title metadata does not reject a valid answer. A fully decoded
+leading answer string can be recovered when only trailing metadata is malformed.
+If the provider reports length truncation but its JSON answer string closed
+completely before optional metadata was cut, return that answer with null title
+and `finish_reason: "unknown"`; retain the provider's original length status in
+internal metadata. An unfinished answer string or plain truncated answer still
+returns `output_truncated`. Structural recovery does not establish writing quality.
+
+Review/repair and non-cover-letter tasks are instructed to return null titles.
+The validated title is stored in existing `FinalResponse.meta`; only letter text
+is stored in `generated_output`. Title evidence/raw envelope is not persisted or
+exposed. App/customer isolation and admin history permissions are unchanged.
+
+Next.js validates the returned title, saves it in its existing `conversation.title`
+and displays it in the sidebar. Apply AI titles only on the first successful
+generation and preserve manual renames. Missing/invalid titles use the existing
+prompt-derived fallback. The consuming frontend must implement these rules; this
+backend change does not access frontend conversations or alter their ownership.
 
 Use server-only `X-API-Key` (or existing `Authorization: Bearer` support). Existing
 active key/project/owner checks and exact method/path grants apply. No Origin
@@ -83,7 +124,8 @@ deductions are added.
 Context-ineligible candidates are skipped before reserving a key.
 
 The existing backend has no provider tokenizer integration. The new path uses a
-conservative `len(prompt.encode('utf-8')) + 256` input-token estimate and reserves
+conservative `len(prompt.encode('utf-8')) + len(OUTPUT_INSTRUCTIONS.encode('utf-8')) + 256`
+input-token estimate and reserves
 the full output allowance inside the model's reported input window. It also
 requires an explicit output capacity at least as large as the allowance. Unknown
 capacities fail closed; no prompt is silently truncated. This estimate can reject
@@ -204,7 +246,7 @@ never reissues generation. These helpers now cover both record types.
 
 ## Verification and deployment
 
-Run `python -m pytest tests/test_generation_records.py tests/test_generation.py
+Run `python -m pytest tests/test_generation_titles.py tests/test_generation_records.py tests/test_generation.py
 tests/test_query_async.py tests/test_query_records.py tests/test_query_reliability.py
 tests/test_app_authorization.py -q`. Tests use isolated
 SQLite, dummy service/provider secrets and mocked completions; no paid provider
@@ -221,6 +263,15 @@ server URL/key, update its adapter and limits, and handle the errors above.
 Live provider support, refusal/truncation mappings, transport cancellation and
 multilingual writing quality need separate authorized evaluation. No deployment,
 production DB mutation or frontend update is part of this implementation.
+
+Optional-title verification (2026-10-18): **187 selected isolated tests passed**
+across the seven modules above, including 37 title tests. English, Russian,
+Spanish, French and Portuguese fixtures verify transport/validation, not live
+linguistic quality. Tests cover privacy/source constraints, 3–7 words, the
+80-code-point boundary, null/malformed metadata, complete-letter recovery after
+metadata truncation, single-call behavior, persisted titles and existing customer/
+admin isolation. Targeted Ruff lint/formatting and diff checks passed. Providers
+were mocked; no live generation, deployment or frontend conversation update occurred.
 
 Verified locally on 2026-10-17 after shared-record support: **150 tests passed**
 across the six modules above, including 41 direct-generation and 16 shared-record

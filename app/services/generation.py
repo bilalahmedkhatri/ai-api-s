@@ -12,7 +12,13 @@ from dataclasses import dataclass, field
 import litellm
 
 from app.core.config import settings
+from app.services.generation_output import (
+    OUTPUT_INSTRUCTIONS,
+    complete_envelope_answer,
+    split_generation_output,
+)
 from app.services.key_manager import get_next_available_key, mark_key_quota_exceeded, mark_key_used
+from app.services.model_endpoints import chat_options
 from app.services.model_router import MAX_MODEL_ATTEMPTS, LLMResult, _model_name, _pick_models
 from app.services.query_telemetry import record_call
 
@@ -29,6 +35,7 @@ class GenerationTrace:
     attempts: list[dict] = field(default_factory=list)
     result: LLMResult | None = None
     finish_reason: str = "unknown"
+    title: str | None = None
 
 
 def _fits_budget(model, prompt: str) -> bool:
@@ -44,7 +51,7 @@ def _fits_budget(model, prompt: str) -> bool:
     # conservative token estimate for the supported text adapters; 256 covers
     # chat framing. Reserve output inside the input window as well, since
     # metadata may describe a shared context. Unknown capacities fail closed.
-    estimated_input = len(prompt.encode("utf-8")) + 256
+    estimated_input = len(prompt.encode("utf-8")) + len(OUTPUT_INSTRUCTIONS.encode("utf-8")) + 256
     output = settings.generation_max_output_tokens
     return (
         isinstance(input_limit, int)
@@ -82,16 +89,21 @@ async def generate_text(
         response = None
         outcome_error = None
         try:
+            options = await chat_options(db, model)
             response = await asyncio.wait_for(
                 litellm.acompletion(
                     model=name,
                     api_key=secret,
-                    messages=[{"role": "user", "content": prompt}],
+                    messages=[
+                        {"role": "system", "content": OUTPUT_INSTRUCTIONS},
+                        {"role": "user", "content": prompt},
+                    ],
                     max_tokens=settings.generation_max_output_tokens,
                     timeout=settings.generation_provider_timeout_seconds,
                     num_retries=0,
                     max_retries=0,
                     fallbacks=[],
+                    **options,
                     **{"no-log": True},
                 ),
                 timeout=settings.generation_provider_timeout_seconds,
@@ -117,7 +129,13 @@ async def generate_text(
                 if reason == "content_filter" or getattr(message, "refusal", None):
                     trace.finish_reason = "refusal"
                     raise GenerationError(422, "provider_refusal", "Provider declined this request")
+                completed_answer = None
                 if reason in {"length", "max_tokens", "max_output_tokens"}:
+                    completed_answer = complete_envelope_answer(getattr(message, "content", None))
+                if (
+                    reason in {"length", "max_tokens", "max_output_tokens"}
+                    and completed_answer is None
+                ):
                     raise GenerationError(
                         502, "output_truncated", "Output budget exhausted; request a shorter output"
                     )
@@ -134,8 +152,14 @@ async def generate_text(
                 answer = message.content
                 if not isinstance(answer, str) or not answer.strip():
                     raise GenerationError(502, "empty_provider_result", "Provider returned no text")
+                if completed_answer is not None:
+                    # Only the envelope/title was cut; the answer's JSON string
+                    # closed completely. Keep provider status unknown publicly.
+                    answer, trace.title = completed_answer, None
+                else:
+                    answer, trace.title = split_generation_output(answer, prompt)
                 answer.encode("utf-8")
-            except (AttributeError, IndexError, TypeError, UnicodeEncodeError):
+            except (AttributeError, IndexError, TypeError, ValueError):
                 raise GenerationError(
                     502, "invalid_provider_result", "Provider returned malformed text output"
                 ) from None
@@ -181,7 +205,7 @@ async def generate_text(
             # Existing bounded DB fallback order, only for explicit failures.
             continue
         finally:
-            telemetry = record_call("chat", name, started, response=response, error=outcome_error)
+            telemetry = record_call("chat", name, started, response=response, error=outcome_error, provider=model.provider)
             attempt.update(
                 {
                     key: telemetry[key]
@@ -196,8 +220,9 @@ async def generate_text(
                 # Save only text content, never reasoning, tool arguments or raw payloads.
                 content = content if isinstance(content, str) else ""
                 try:
+                    content, _ = split_generation_output(content, prompt)
                     content.encode("utf-8")
-                except UnicodeEncodeError:
+                except (ValueError, TypeError):
                     content = ""
                 trace.result = LLMResult(
                     content,

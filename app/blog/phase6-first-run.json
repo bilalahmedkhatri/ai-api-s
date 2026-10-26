@@ -1,0 +1,148 @@
+{
+  "run_id": "20261023T235553Z-c21802",
+  "started_at": "2026-10-23T23:55:53.153936+00:00",
+  "scope": "configured local checkout and configured databases/B2; not deployment",
+  "apps": {
+    "azeemlab": {
+      "post_ids": [
+        1,
+        2,
+        4
+      ],
+      "asset_ids": [
+        1,
+        2,
+        3
+      ],
+      "status": "passed",
+      "before": {
+        "blog_posts": 0,
+        "blog_categories": 0,
+        "blog_assets": 0
+      }
+    },
+    "ailettergen": {
+      "post_ids": [
+        1
+      ],
+      "asset_ids": [
+        1
+      ],
+      "status": "passed",
+      "before": {
+        "blog_posts": 0,
+        "blog_categories": 0,
+        "blog_assets": 0
+      }
+    },
+    "bondsgame": {
+      "post_ids": [
+        1
+      ],
+      "asset_ids": [
+        1
+      ],
+      "status": "passed",
+      "before": {
+        "blog_posts": 0,
+        "blog_categories": 0,
+        "blog_assets": 0
+      }
+    },
+    "sikanderart": {
+      "status": "unconfigured_skipped"
+    },
+    "e_sahulat": {
+      "status": "unconfigured_skipped"
+    },
+    "genzee_video": {
+      "post_ids": [],
+      "asset_ids": [],
+      "status": "running",
+      "before": {
+        "blog_posts": 0,
+        "blog_categories": 0,
+        "blog_assets": 0
+      }
+    }
+  },
+  "checks": {
+    "missing_session_denied": true,
+    "foreign_origin_denied": true,
+    "azeemlab_image/png_upload": true,
+    "azeemlab_image/png_object_scope": true,
+    "azeemlab_image/png_public_bytes": true,
+    "azeemlab_image/png_retry": true,
+    "azeemlab_audio/wav_upload": true,
+    "azeemlab_audio/wav_object_scope": true,
+    "azeemlab_audio/wav_public_bytes": true,
+    "azeemlab_audio/wav_retry": true,
+    "azeemlab_video/mp4_upload": true,
+    "azeemlab_video/mp4_object_scope": true,
+    "azeemlab_video/mp4_public_bytes": true,
+    "azeemlab_video/mp4_retry": true,
+    "azeemlab_author_snapshot": true,
+    "azeemlab_draft_metadata": true,
+    "azeemlab_roundtrip": true,
+    "azeemlab_actual_list_contract": true,
+    "azeemlab_category_roundtrip": true,
+    "azeemlab_postgres_concurrent_version": true,
+    "postgres_concurrent_slug_collision": true,
+    "postgres_category_reuse_4": true,
+    "postgres_category_reuse_2": true,
+    "ailettergen_audio/wav_upload": true,
+    "ailettergen_audio/wav_object_scope": true,
+    "ailettergen_audio/wav_public_bytes": true,
+    "ailettergen_audio/wav_retry": true,
+    "ailettergen_author_snapshot": true,
+    "ailettergen_draft_metadata": true,
+    "ailettergen_roundtrip": true,
+    "ailettergen_actual_list_contract": true,
+    "ailettergen_category_roundtrip": true,
+    "ailettergen_postgres_concurrent_version": true,
+    "bondsgame_audio/wav_upload": true,
+    "bondsgame_audio/wav_object_scope": true,
+    "bondsgame_audio/wav_public_bytes": true,
+    "bondsgame_audio/wav_retry": true,
+    "bondsgame_author_snapshot": true,
+    "bondsgame_draft_metadata": true,
+    "bondsgame_roundtrip": true,
+    "bondsgame_actual_list_contract": true,
+    "bondsgame_category_roundtrip": true,
+    "bondsgame_postgres_concurrent_version": true,
+    "genzee_video_audio/wav_upload": false
+  },
+  "session_revoked": true,
+  "published_test_posts": false,
+  "author_membership_id": 1,
+  "error_type": "RuntimeError",
+  "status": "failed",
+  "archive_results": [
+    {
+      "app": "azeemlab",
+      "id": 1,
+      "archived": true
+    },
+    {
+      "app": "azeemlab",
+      "id": 2,
+      "archived": true
+    },
+    {
+      "app": "azeemlab",
+      "id": 4,
+      "archived": true
+    },
+    {
+      "app": "ailettergen",
+      "id": 1,
+      "archived": true
+    },
+    {
+      "app": "bondsgame",
+      "id": 1,
+      "archived": true
+    }
+  ],
+  "recovery_session_revoked_at": "2026-10-24T06:08:49.523105+00:00"
+}

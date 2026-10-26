@@ -10,6 +10,7 @@ from app.api.v1.audio.schemas import DynamicTTSRequest, RenewAudioUrlRequest
 from app.core.auth import get_current_api_key
 from app.db.database import get_db
 from app.models.db_models import AccessAPIKey, TTSChunk, TTSJob
+from app.services.generation_telemetry import request_identity
 from app.services.tts.availability import LOCAL_KOKORO_UNAVAILABLE, is_local_kokoro
 from app.services.tts.constants import GEMINI_CHUNK_MAX_CHARS, KOKORO_CHUNK_MAX_CHARS
 from app.services.tts.generator import _ModelInfo
@@ -20,7 +21,16 @@ from app.services.tts_service import (
     get_dynamic_tts_models,
     get_dynamic_voices,
 )
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -161,6 +171,7 @@ async def get_sample_endpoint(
 )
 async def generate_tts_endpoint(
     req: DynamicTTSRequest,
+    request: Request,
     background_tasks: BackgroundTasks,
     api_key: AccessAPIKey | None = Depends(get_current_api_key),
     db: AsyncSession = Depends(get_db)
@@ -173,10 +184,13 @@ async def generate_tts_endpoint(
     from sqlalchemy import select
 
     # 1. Validate model exists and is active in DB
-    stmt = select(TTSModel).where(TTSModel.name == req.model, TTSModel.is_active.is_(True))
+    stmt = select(TTSModel).where(TTSModel.name == req.model)
     if req.provider:
         stmt = stmt.where(TTSModel.provider.ilike(req.provider.strip()))
     model_obj = (await db.execute(stmt)).scalar_one_or_none()
+    from app.services.model_endpoints import legacy_views
+    models = await legacy_views(db, [model_obj] if model_obj else [], "tts")
+    model_obj = models[0] if models else None
     if not model_obj:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -200,9 +214,12 @@ async def generate_tts_endpoint(
             api_endpoint_url=model_obj.api_endpoint_url, provider_config=model_obj.provider_config or {},
             default_voice=model_obj.default_voice, default_speed=model_obj.default_speed,
             default_lang=model_obj.default_lang,
+            model_endpoint_id=getattr(model_obj, "model_endpoint_id", None),
         ))
         generation = {"model_snapshot": snapshot, "voice": req.voice or model_obj.default_voice,
-                      "lang": req.lang, "speed": req.speed, "extra_params": req.extra_params}
+                      "lang": req.lang, "speed": req.speed, "extra_params": req.extra_params,
+                      "_telemetry": {"version": 1, "coverage_complete": True, "attempts": [],
+                                     **request_identity(request, app_id)}}
         limit = GEMINI_CHUNK_MAX_CHARS if provider_name == 'gemini' else KOKORO_CHUNK_MAX_CHARS
 
         # Save pending job to DB

@@ -168,11 +168,11 @@ async def test_grants_sections_components_and_direct_operation_denial(dashboard)
     await db.commit()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         data = (await client.get("/api/v1/dashboard/catalog", headers=headers)).json()
-        assert "/api/v1/audio/models" not in data["spec"]["paths"]
+        assert "/api/v1/audio/models" in data["spec"]["paths"]
         assert (await client.get("/api/v1/dashboard/members", headers=headers)).status_code == 403
         import base64
 
-        identifier = base64.urlsafe_b64encode(b"get:/api/v1/audio/models").decode().rstrip("=")
+        identifier = base64.urlsafe_b64encode(b"post:/api/v1/audio/tts").decode().rstrip("=")
         assert (
             await client.post("/api/v1/dashboard/operations/" + identifier, headers=headers)
         ).status_code == 403

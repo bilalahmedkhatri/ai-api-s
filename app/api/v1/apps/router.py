@@ -74,12 +74,14 @@ def app_response(app: AuthorizedApp) -> dict:
 
 
 def available_endpoints(request: Request) -> set[str]:
+    from app.services.access_policy import APP_OPERATIONS
     return {
         f"{method.upper()} {path}"
         for path, methods in request.app.openapi()["paths"].items()
         if any(path.startswith(f"/api/v1/{prefix}/") or path == f"/api/v1/{prefix}" for prefix in PROTECTED_PREFIXES)
         for method in methods
         if method.upper() in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"}
+        and f"{method.upper()} {path}" in APP_OPERATIONS
     }
 
 
@@ -95,7 +97,8 @@ async def list_endpoints(request: Request):
 
 @router.patch("/owners/{user_id}/permission")
 async def set_owner_permission(user_id: int, body: OwnerPermission, db: AsyncSession = Depends(get_db)):
-    user = await db.get(User, user_id)
+    user = (await db.execute(select(User).where(User.id == user_id).with_for_update()
+                             .execution_options(populate_existing=True))).scalar_one_or_none()
     if not user:
         raise HTTPException(404, "Gateway user not found")
     user.api_access_enabled = body.api_access_enabled

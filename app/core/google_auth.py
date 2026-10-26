@@ -1,12 +1,12 @@
 """app/core/google_auth.py — Google OAuth2 helpers + JWT cookie management."""
 
 import logging
-import os
+import secrets
 from datetime import UTC, datetime, timedelta
 
 from fastapi import Response
 from itsdangerous import BadSignature, TimestampSigner
-from jose import JWTError, jwt
+from jose import jwt
 
 from app.core.config import settings
 
@@ -29,7 +29,7 @@ _signer = TimestampSigner(settings.secret_key)
 
 def generate_oauth_state() -> str:
     """Return an HMAC-signed, timestamp-embedded state token for CSRF protection."""
-    return _signer.sign("oauth").decode()
+    return _signer.sign(secrets.token_urlsafe(32)).decode()
 
 
 def verify_oauth_state(state: str, max_age: int = 300) -> bool:
@@ -43,11 +43,12 @@ def verify_oauth_state(state: str, max_age: int = 300) -> bool:
 
 # ── JWT ───────────────────────────────────────────────────────────────────────
 
-def create_jwt(user_id: int, email: str) -> str:
+def create_jwt(user_id: int, email: str, session_version: int = 0) -> str:
     """Sign a short-lived HS256 JWT containing user identity."""
     payload = {
         "sub": str(user_id),
         "email": email,
+        "session_version": session_version,
         "iat": datetime.now(UTC),
         "exp": datetime.now(UTC) + timedelta(minutes=JWT_EXPIRE_MINUTES),
     }
@@ -82,7 +83,7 @@ def clear_auth_cookie(response: Response) -> None:
 
 # ── Google OAuth2 URL builder ─────────────────────────────────────────────────
 
-def build_google_auth_url(redirect_uri: str, state: str) -> str:
+def build_google_auth_url(redirect_uri: str, state: str, code_challenge: str | None = None) -> str:
     """Construct the Google OAuth2 consent screen URL."""
     import urllib.parse
 
@@ -95,10 +96,12 @@ def build_google_auth_url(redirect_uri: str, state: str) -> str:
         "access_type": "online",
         "prompt": "select_account",
     }
+    if code_challenge:
+        params.update(code_challenge=code_challenge, code_challenge_method="S256")
     return f"{GOOGLE_AUTH_URL}?{urllib.parse.urlencode(params)}"
 
 
-async def exchange_code_for_userinfo(code: str, redirect_uri: str) -> dict:
+async def exchange_code_for_userinfo(code: str, redirect_uri: str, code_verifier: str | None = None) -> dict:
     """Exchange an authorization code for Google user info. Returns the userinfo dict."""
     import httpx
 
@@ -112,6 +115,7 @@ async def exchange_code_for_userinfo(code: str, redirect_uri: str) -> dict:
                 "client_secret": settings.google_client_secret,
                 "redirect_uri": redirect_uri,
                 "grant_type": "authorization_code",
+                **({"code_verifier": code_verifier} if code_verifier else {}),
             },
         )
         token_resp.raise_for_status()

@@ -9,7 +9,7 @@ import os
 import re
 import secrets
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 from urllib.parse import quote, urlencode
 
 import httpx
@@ -26,6 +26,7 @@ from app.models.dashboard import (
     Permission,
     ServiceCredential,
 )
+from app.services.access_policy import member_operation_allowed, operation_kind
 from app.services.dashboard import (
     COMPONENTS,
     PAGES,
@@ -45,16 +46,68 @@ from app.services.dashboard import (
     require,
     require_admin,
 )
+from app.services.member_lifecycle import (
+    invalidate_member,
+    lock_admin_change,
+    lock_target,
+    protect_administrator,
+)
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi import Query as QueryParam
 from fastapi.responses import RedirectResponse, Response
 from jose import jwt
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import IntegrityError
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+
+
+async def history_filters(
+    response: Response, m=Depends(member),
+    request_type: str | None = QueryParam(None, max_length=20, description="query, generate, tts, image or video; omit for all"),
+    status: str | None = QueryParam(None, max_length=20, description="queued, processing, completed, failed, cancelled, rejected or unknown"),
+    model: str | None = QueryParam(None, min_length=1, max_length=128),
+    provider: str | None = QueryParam(None, min_length=1, max_length=64),
+    search: str | None = QueryParam(None, min_length=1, max_length=128, description="Literal substring of request ID, model or provider"),
+    authorized_app_id: int | None = QueryParam(None, ge=1),
+    owner_user_id: int | None = QueryParam(None, ge=1),
+    date_from: datetime | None = QueryParam(None, description="Inclusive timezone-aware start; default 30 days before end"),
+    date_to: datetime | None = QueryParam(None, description="Exclusive timezone-aware end; default now; maximum range 366 days"),
+):
+    require_admin(m)
+    response.headers["Cache-Control"] = "no-store"
+    return {"request_type": request_type, "status": status, "model": model, "provider": provider, "search": search,
+                "authorized_app_id": authorized_app_id, "owner_user_id": owner_user_id,
+                "date_from": date_from, "date_to": date_to}
+
+
+@router.get("/requests", summary="List AI parent requests across existing history sources")
+async def ai_requests(page: int = QueryParam(1, ge=1),
+                      page_size: int = QueryParam(20, ge=1, le=100),
+                      filters=Depends(history_filters), db=Depends(get_db)):
+    from app.services.request_history import history_page
+
+    return await history_page(db, filters, page, page_size)
+
+
+@router.get("/requests/summary", summary="Aggregate all filtered AI parent requests")
+async def ai_request_summary(filters=Depends(history_filters), db=Depends(get_db)):
+    from app.services.request_history import history_summary
+
+    return await history_summary(db, filters)
+
+
+@router.get("/requests/{record_id}", summary="Inspect one AI parent request and recorded children")
+async def ai_request_detail(record_id: str, response: Response,
+                            m=Depends(member), db=Depends(get_db)):
+    from app.services.request_history import history_detail
+
+    require_admin(m)
+    response.headers["Cache-Control"] = "no-store"
+    return await history_detail(db, record_id)
 
 
 @router.get("/query-requests")
@@ -105,20 +158,28 @@ class Rule(BaseModel):
 
 
 class MemberUpdate(BaseModel):
-    role: str = Field(pattern="^(admin|operator|viewer)$")
-    status: str = Field(pattern="^(pending|approved|revoked)$")
-    permissions: list[Rule] = Field(default_factory=list, max_length=500)
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    role: str | None = Field(default=None, pattern="^(admin|operator|viewer)$")
+    status: str | None = Field(default=None, pattern="^(pending|approved|revoked)$")
+    permissions: list[Rule] | None = Field(default=None, max_length=500)
+    name: str | None = Field(default=None, max_length=80)
+    email: str | None = Field(default=None, max_length=254)
+    access_expires_at: datetime | None = None
 
 
 class Invite(MemberUpdate):
+    role: str = Field(default="viewer", pattern="^(admin|operator|viewer)$")
+    status: str = Field(default="pending", pattern="^(pending|approved|revoked)$")
+    permissions: list[Rule] = Field(default_factory=list, max_length=500)
     email: str = Field(pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$", max_length=254)
     name: str = Field(default="", max_length=80)
 
 
 class CredentialInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     label: str = Field(min_length=1, max_length=80)
     kind: str = Field(pattern="^(admin|app)$")
-    secret: str = Field(min_length=10, max_length=8192)
+    secret: SecretStr = Field(min_length=10, max_length=8192)
     origin: str = ""
 
 
@@ -340,6 +401,7 @@ def operations(request):
         if not path.startswith("/api/v1/dashboard")
         for method, operation in items.items()
         if method in {"get", "post", "patch", "put", "delete", "head", "options"}
+        and operation_kind(method, path) is not None
     ]
 
 
@@ -348,11 +410,7 @@ def group(path):
 
 
 async def visible(db, m, method, path):
-    return (
-        await allowed(db, m, "page", "endpoints")
-        and await allowed(db, m, "section", group(path))
-        and await allowed(db, m, "endpoint", f"{method} {path}", "execute")
-    )
+    return await member_operation_allowed(db, m, method, path)
 
 
 @router.get("/catalog")
@@ -455,8 +513,7 @@ async def members(request: Request, response: Response, m=Depends(member), db=De
     )
     return {
         "users": [
-            {**await dto(db, r), "master_key": cipher().decrypt(r.master_key_encrypted.encode()).decode()
-             if r.master_key_encrypted else None}
+            {**await dto(db, r), "master_key": None}
             for r in records
         ],
         "requests": [
@@ -516,6 +573,7 @@ async def save_rules(body, request, db, target):
 async def invite(body: Invite, request: Request, m=Depends(member), db=Depends(get_db)):
     check_origin(request)
     require_admin(m)
+    await lock_admin_change(db, m)
     if (
         await db.execute(select(Membership).where(Membership.email == body.email.lower()))
     ).scalar_one_or_none():
@@ -539,11 +597,13 @@ async def invite(body: Invite, request: Request, m=Depends(member), db=Depends(g
         if not entry.email_verified:
             raise HTTPException(400, "Verify the request email before approval")
         entry.status, entry.reviewed_by, entry.reviewed_at = body.status, m.id, now()
-    if target.status == "approved":
-        from app.services.customer_keys import ensure_master_key
-        ensure_master_key(target)
+    target.access_expires_at = body.access_expires_at
     await audit(db, m, "INVITE_MEMBER", str(target.id))
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(409, "Membership already exists") from None
     return await dto(db, target)
 
 
@@ -553,33 +613,68 @@ async def change(
 ):
     check_origin(request)
     require_admin(m)
+    await lock_admin_change(db, m)
     if identifier == m.id:
         raise HTTPException(400, "Another administrator must change your access")
-    target = await db.get(Membership, identifier)
-    if not target:
-        raise HTTPException(404, "Member not found")
+    target = await lock_target(db, identifier)
+    if body.email is not None and body.email.lower() != target.email:
+        raise HTTPException(400, "A member identity cannot be reassigned")
+    role = body.role if body.role is not None else target.role
+    status = body.status if body.status is not None else target.status
+    expires = body.access_expires_at if "access_expires_at" in body.model_fields_set else target.access_expires_at
+    await protect_administrator(db, target, role, status, expires)
     entry = (await db.execute(select(AccessRequest).where(
         AccessRequest.email == target.email
     ))).scalar_one_or_none()
-    if entry and entry.status == "pending" and body.status == "approved" and not entry.email_verified:
+    if entry and entry.status == "pending" and status == "approved" and not entry.email_verified:
         raise HTTPException(400, "Verify the request email before approval")
-    await save_rules(body, request, db, target)
+    if body.permissions is not None:
+        await save_rules(body, request, db, target)
     if entry and entry.status == "pending":
-        entry.status, entry.reviewed_by, entry.reviewed_at = body.status, m.id, now()
-    target.role, target.status = body.role, body.status
-    target.approved_by, target.approved_at = m.id, now() if body.status == "approved" else None
-    if target.status == "approved":
-        from app.services.customer_keys import ensure_master_key
-        ensure_master_key(target)
+        entry.status, entry.reviewed_by, entry.reviewed_at = status, m.id, now()
+    target.role, target.status, target.access_expires_at = role, status, expires
+    if body.name is not None:
+        target.name = body.name
+    target.approved_by, target.approved_at = m.id, now() if status == "approved" else None
     target.permission_version += 1
-    await db.execute(
-        update(DashboardSession)
-        .where(DashboardSession.membership_id == target.id)
-        .values(revoked_at=now())
-    )
+    await invalidate_member(db, target, revoke_keys=status != "approved" or bool(expires and aware(expires) <= now()))
+    if target.api_project_id:
+        from app.models.db_models import AuthorizedApp
+        from app.services.access_policy import effective_app_grants
+        project = await db.get(AuthorizedApp, target.api_project_id)
+        if project and project.owner_user_id == target.user_id:
+            project.allowed_endpoints_json = json.dumps(sorted(await effective_app_grants(db, target)))
     await audit(db, m, "UPDATE_MEMBER", str(target.id))
     await db.commit()
     return await dto(db, target)
+
+
+@router.get("/members/{identifier}")
+async def member_detail(identifier: int, response: Response, m=Depends(member), db=Depends(get_db)):
+    require_admin(m)
+    response.headers["Cache-Control"] = "no-store"
+    target = await db.get(Membership, identifier)
+    if not target:
+        raise HTTPException(404, "Member not found")
+    return await dto(db, target)
+
+
+@router.delete("/members/{identifier}")
+async def delete_member(identifier: int, request: Request, response: Response, m=Depends(member), db=Depends(get_db)):
+    check_origin(request)
+    require_admin(m)
+    response.headers["Cache-Control"] = "no-store"
+    await lock_admin_change(db, m)
+    if identifier == m.id:
+        raise HTTPException(400, "Another administrator must change your access")
+    target = await lock_target(db, identifier)
+    await protect_administrator(db, target, target.role, "revoked", target.access_expires_at)
+    target.status = "revoked"
+    target.permission_version += 1
+    await invalidate_member(db, target, revoke_keys=True)
+    await audit(db, m, "REVOKE_MEMBER", str(identifier))
+    await db.commit()
+    return {"success": True}
 
 
 @router.post("/access-requests/{identifier}/reject")
@@ -599,8 +694,23 @@ async def reject(identifier: int, request: Request, m=Depends(member), db=Depend
 async def credentials(m=Depends(member), db=Depends(get_db)):
     require_admin(m)
     rows = (
-        await db.execute(select(ServiceCredential).order_by(ServiceCredential.id.desc()))
-    ).scalars()
+        await db.execute(select(ServiceCredential).where(ServiceCredential.membership_id.is_(None))
+                         .order_by(ServiceCredential.id.desc()))
+    ).scalars().all()
+    from app.models.db_models import AccessAPIKey, AuthorizedApp, User
+    from app.services.api_key_service import customer_project_active
+    candidates = (await db.execute(select(AuthorizedApp.id).join(
+        AccessAPIKey, AccessAPIKey.authorized_app_id == AuthorizedApp.id
+    ).join(User, AuthorizedApp.owner_user_id == User.id).where(
+        AccessAPIKey.is_active.is_(True), AuthorizedApp.is_active.is_(True),
+        AuthorizedApp.is_approved.is_(True), User.is_active.is_(True),
+        User.api_access_enabled.is_(True),
+    ).distinct())).scalars().all()
+    configured_app = False
+    for app_id in candidates:
+        if await customer_project_active(db, app_id):
+            configured_app = True
+            break
     return {
         "credentials": [
             {
@@ -614,7 +724,7 @@ async def credentials(m=Depends(member), db=Depends(get_db)):
         ],
         "configured": {
             "admin": bool(settings.cron_secret),
-            "app": False,
+            "app": configured_app,
             "vault": bool(settings.encryption_key),
         },
     }
@@ -622,9 +732,10 @@ async def credentials(m=Depends(member), db=Depends(get_db)):
 
 @router.get("/operation-credentials")
 async def operation_credentials(m=Depends(member), db=Depends(get_db)):
-    await require(db, m, "page", "endpoints")
-    rows = (await db.execute(select(ServiceCredential))).scalars().all()
-    visible_rows = [r for r in rows if await allowed(db, m, "credential", str(r.id), "execute")]
+    rows = (await db.execute(select(ServiceCredential).where(ServiceCredential.membership_id.is_(None)))).scalars().all()
+    visible_rows = [r for r in rows if m.role == "admin" or (
+        m.api_project_id is not None and r.kind == "app" and r.authorized_app_id == m.api_project_id
+        and await allowed(db, m, "credential", str(r.id), "execute"))]
     return {
         "credentials": [
             {
@@ -647,13 +758,28 @@ async def save_credential(
 
     check_origin(request)
     require_admin(m)
-    origin = normalize_origin(body.origin) if body.kind == "app" else None
+    try:
+        origin = normalize_origin(body.origin) if body.kind == "app" and body.origin else None
+    except ValueError:
+        raise HTTPException(422, "Provide a valid app origin") from None
+    from app.services.credential_access import app_credential_binding
+    raw = body.secret.get_secret_value()
+    key, app = await app_credential_binding(db, raw) if body.kind == "app" else (None, None)
     row = (
         await db.execute(select(ServiceCredential).where(ServiceCredential.label == body.label))
     ).scalar_one_or_none()
-    encrypted = cipher().encrypt(body.secret.encode()).decode()
+    if row and row.membership_id is not None:
+        raise HTTPException(409, "Managed execution credentials cannot be replaced manually")
+    if row and (row.kind != body.kind or (row.authorized_app_id and row.authorized_app_id != app.id)):
+        raise HTTPException(409, "A saved credential cannot change kind or project")
+    if row and row.kind == "app" and row.authorized_app_id is None:
+        # Legacy assignments have no proven binding. Replacing clears their grants.
+        await db.execute(delete(Permission).where(Permission.resource_type == "credential",
+                                                  Permission.resource_key == str(row.id)))
+    encrypted = cipher().encrypt(raw.encode()).decode()
     if row:
         row.encrypted_value, row.kind, row.app_origin = encrypted, body.kind, origin
+        row.authorized_app_id, row.access_api_key_id = (app.id, key.id) if app else (None, None)
     else:
         db.add(
             ServiceCredential(
@@ -663,10 +789,16 @@ async def save_credential(
                 app_origin=origin,
                 created_by=m.id,
                 created_at=now(),
+                authorized_app_id=app.id if app else None,
+                access_api_key_id=key.id if key else None,
             )
         )
     await audit(db, m, "SAVE_CREDENTIAL", "vault")
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(409, "Credential label or key already exists") from None
     return {"success": True}
 
 
@@ -676,6 +808,9 @@ async def delete_credential(
 ):
     check_origin(request)
     require_admin(m)
+    row = await db.get(ServiceCredential, identifier)
+    if row and row.membership_id is not None:
+        raise HTTPException(409, "Revoke the member to remove managed execution access")
     await db.execute(
         delete(Permission).where(
             Permission.resource_type == "credential", Permission.resource_key == str(identifier)
@@ -690,7 +825,8 @@ async def delete_credential(
 @router.post("/operations/{identifier}")
 async def execute(identifier: str, request: Request, m=Depends(member), db=Depends(get_db)):
     check_origin(request)
-    await require(db, m, "page", "endpoints")
+    from app.services.customer_keys import execution_credential, locked_member
+    m = await locked_member(db, m.id)
     selected = next(
         (
             (method, path, op)
@@ -703,28 +839,9 @@ async def execute(identifier: str, request: Request, m=Depends(member), db=Depen
     if not selected:
         raise HTTPException(404, "Endpoint not found")
     method, path, op = selected
-    kind = (
-        "oauth"
-        if path.startswith("/api/v1/auth/")
-        else "admin"
-        if re.match(r"^/api/v1/(apps|keys|cron)(/|$)", path)
-        else "app"
-        if re.match(r"^/api/v1/(audio|ingest|query|image|video|media|facebook)(/|$)", path)
-        else "public"
-    )
-    if kind == "oauth" or m.role == "viewer" or (kind == "admin" and m.role != "admin"):
+    kind = operation_kind(method, path)
+    if not await member_operation_allowed(db, m, method, path):
         raise HTTPException(403, "Operation execution denied")
-    await require(db, m, "section", group(path))
-    await require(db, m, "endpoint", f"{method} {path}", "execute")
-    await require(db, m, "component", "endpoint.execute")
-    component = {
-        "POST": "endpoint.create",
-        "PATCH": "endpoint.update",
-        "PUT": "endpoint.update",
-        "DELETE": "endpoint.delete",
-    }.get(method)
-    if component:
-        await require(db, m, "component", component)
     if int(request.headers.get("content-length", "0")) > 22 * 1024 * 1024:
         raise HTTPException(413, "Request too large")
     payload = bytearray()
@@ -737,23 +854,35 @@ async def execute(identifier: str, request: Request, m=Depends(member), db=Depen
     if (method not in {"GET", "HEAD"} or group(path) == "cron") and form.get("confirmed") != "on":
         raise HTTPException(400, "Confirm this operation before execution")
     headers = {}
-    credential = int(form.get("credential") or 0)
+    try:
+        credential = int(form.get("credential") or 0)
+    except (ValueError, TypeError):
+        raise HTTPException(400, "Invalid credential selection") from None
     if kind in {"admin", "app"}:
         if credential:
             row = await db.get(ServiceCredential, credential)
             if not row or row.kind != kind:
                 raise HTTPException(400, "Select a matching credential")
             await require(db, m, "credential", str(credential), "execute")
-            raw = cipher().decrypt(row.encrypted_value.encode()).decode()
+            try:
+                raw = cipher().decrypt(row.encrypted_value.encode()).decode()
+            except Exception:
+                raise HTTPException(503, "Saved credential unavailable") from None
+            if kind == "app":
+                from app.services.credential_access import checked_credential
+                await checked_credential(db, row, raw, m)
             headers = (
                 {"X-Cron-Secret": raw}
                 if kind == "admin"
-                else {"X-API-Key": raw, "X-App-Origin": row.app_origin}
+                else {"X-API-Key": raw}
             )
         elif kind == "admin" and m.role == "admin" and settings.cron_secret:
             headers = {"X-Cron-Secret": settings.cron_secret}
+        elif kind == "app":
+            _, raw = await execution_credential(db, m)
+            headers = {"X-API-Key": raw}
         else:
-            raise HTTPException(400, "Select an assigned service credential")
+            raise HTTPException(503, "Admin authorization is not configured")
     params = {}
     for p in op.get("parameters", []):
         if p["in"] not in {"path", "query"}:
@@ -794,6 +923,8 @@ async def execute(identifier: str, request: Request, m=Depends(member), db=Depen
             kwargs["data"] = data
     if method == "POST" and path == "/api/v1/keys/":
         cipher()
+    # The upstream uses a separate DB session and must see the managed key first.
+    await db.commit()
     started = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=60, follow_redirects=False) as client:
@@ -826,11 +957,13 @@ async def execute(identifier: str, request: Request, m=Depends(member), db=Depen
                         kind="app",
                         encrypted_value=cipher().encrypt(result["raw_key"].encode()).decode(),
                         app_origin=result.get("allowed_domain"),
+                        authorized_app_id=result["authorized_app_id"],
+                        access_api_key_id=result["id"],
                         created_by=m.id,
                         created_at=now(),
                     )
                 )
-            result = redact(result)
+            result = redact(result, tuple(headers.values()))
         else:
             result = {"content_type": content_type, "size_bytes": len(chunks)}
         await audit(

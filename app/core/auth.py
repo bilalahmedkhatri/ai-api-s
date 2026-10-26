@@ -1,10 +1,13 @@
 """app/core/auth.py — FastAPI authentication dependencies for third-party client API keys."""
 
+from datetime import UTC, datetime
+
 from fastapi import Depends, Header, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
 from app.models.db_models import AccessAPIKey, AuthorizedApp
+from app.services.access_policy import app_membership, member_operation_allowed, operation_kind
 from app.services.api_key_service import verify_api_key
 from app.services.app_access_service import endpoint_allowed
 
@@ -28,7 +31,7 @@ async def get_current_api_key(
         raw_key = authorization.split("Bearer ", 1)[1].strip()
 
     if raw_key:
-        api_key_record = await verify_api_key(db, raw_key=raw_key)
+        api_key_record = await verify_api_key(db, raw_key=raw_key, touch=False)
         if not api_key_record:
             raise HTTPException(
                 status_code=401,
@@ -42,6 +45,13 @@ async def get_current_api_key(
         route_path = getattr(context, "path", request.scope["route"].path)
         if not app or not endpoint_allowed(app.allowed_endpoints_json, request.method, route_path):
             raise HTTPException(403, "This app does not have permission for this endpoint")
+        if operation_kind(request.method, route_path) != "app":
+            raise HTTPException(403, "This operation is not available to app keys")
+        membership = await app_membership(db, app)
+        if membership and not await member_operation_allowed(db, membership, request.method, route_path):
+            raise HTTPException(403, "This user does not have permission for this operation")
+        api_key_record.last_used_at = datetime.now(UTC)
+        await db.commit()
         request.state.api_key = api_key_record
         request.state.authorized_app = app
         return api_key_record

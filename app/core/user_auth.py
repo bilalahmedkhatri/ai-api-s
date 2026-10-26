@@ -4,13 +4,24 @@ import logging
 
 from fastapi import Depends, HTTPException, Request, status
 from jose import JWTError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.google_auth import COOKIE_NAME, decode_jwt
 from app.db.database import get_db
+from app.models.dashboard import Membership
 from app.models.db_models import User
 
 logger = logging.getLogger(__name__)
+
+
+async def cookie_session_active(db, user, payload):
+    from app.services.dashboard import aware, now
+    if not user or not user.is_active or payload.get("session_version", 0) != user.session_version:
+        return False
+    membership = (await db.execute(select(Membership).where(Membership.user_id == user.id))).scalar_one_or_none()
+    return membership is None or (membership.status == "approved" and (
+        membership.access_expires_at is None or aware(membership.access_expires_at) > now()))
 
 
 async def get_current_user(
@@ -34,10 +45,10 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired session. Please log in again.",
-        )
+        ) from None
 
     user = await db.get(User, user_id)
-    if not user or not user.is_active:
+    if not await cookie_session_active(db, user, payload):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User account not found or deactivated.",
@@ -60,6 +71,6 @@ async def get_optional_user(
         payload = decode_jwt(token)
         user_id = int(payload["sub"])
         user = await db.get(User, user_id)
-        return user if (user and user.is_active) else None
+        return user if await cookie_session_active(db, user, payload) else None
     except Exception:
         return None

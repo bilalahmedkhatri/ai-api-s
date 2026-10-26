@@ -35,6 +35,8 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
 
         response.headers["X-Request-ID"] = request_id
+        if request.url.path.startswith(("/api/v1/dashboard", "/api/v1/auth")):
+            response.headers["Cache-Control"] = "no-store"
         record_path = request.url.path.rstrip("/")
         if (request.method == "POST" and record_path in {"/api/v1/query", "/api/v1/generate"}
                 and response.status_code >= 400 and not getattr(request.state, "query_record_id", None)):

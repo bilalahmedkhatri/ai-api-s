@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.db.database import AsyncSessionLocal
+from app.services.generation_telemetry import begin_attempt, http_usage, provider_attempt
 from app.services.key_manager import (
     get_next_available_key,
     mark_key_quota_exceeded,
@@ -154,19 +155,25 @@ async def _synthesize_chunk(
                 await _pace_request()
                 # Bound simultaneous calls without serializing an entire job on one key.
                 started = time.monotonic()
-                resp = await client.post(url, json=payload, headers={"x-goog-api-key": key.value})
+                async with provider_attempt("tts") as measurement:
+                    await begin_attempt()
+                    resp = await client.post(url, json=payload, headers={"x-goog-api-key": key.value})
+                    http_usage(measurement, resp, gemini=True)
+                    resp.raise_for_status()
+                    # A 200 response without audio is a failed generation attempt.
+                    wav = _extract_wav(resp.json())
                 logger.info('TTS provider response provider=%s key_id=%s status=%d elapsed_sec=%.2f',
                             provider, key.key_id, resp.status_code, time.monotonic() - started)
         except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.NetworkError) as exc:
             last_exc = exc
             continue
+        except httpx.HTTPStatusError as exc:
+            resp = exc.response
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            last_exc = RuntimeError(f"Gemini returned no audio ({type(exc).__name__})")
+            continue
 
         if resp.status_code == 200:
-            try:
-                wav = _extract_wav(resp.json())
-            except (KeyError, IndexError, TypeError, ValueError) as exc:
-                last_exc = RuntimeError(f"Gemini returned no audio ({type(exc).__name__})")
-                continue  # empty-audio responses are transient
             await _mark_used(key)
             return wav
 

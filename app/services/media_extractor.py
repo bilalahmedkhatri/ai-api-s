@@ -1,13 +1,15 @@
 ﻿import asyncio
 import logging
 import os
+import urllib.parse
 import uuid
-from urllib.parse import quote_plus
+from urllib.parse import quote, quote_plus
 
 import httpx
+from botocore.config import Config
 from botocore.exceptions import ClientError
-from sqlalchemy.future import select
 from sqlalchemy import delete
+from sqlalchemy.future import select
 
 from app.core.config import settings
 from app.db.database import AsyncSessionLocal
@@ -25,12 +27,10 @@ except ImportError:
     aioboto3 = None
 
 
-from botocore.config import Config
-
 def get_b2_session():
     if not aioboto3:
         raise RuntimeError("aioboto3 is not installed. Run `uv add aioboto3`.")
-    
+
     # Extract region from endpoint (e.g. https://s3.eu-central-003.backblazeb2.com -> eu-central-003)
     endpoint = settings.b2_endpoint_url or ""
     region = "us-east-1"
@@ -50,7 +50,7 @@ async def fetch_pexels(keyword: str, quantity: int, filters: dict, client: httpx
 
     is_video = filters.get("image_type", "").lower() == "video"
     requested_orientation = filters.get("orientation", "").lower()
-    
+
     # Always fetch a larger batch so we can manually filter
     per_page = 15
     if is_video:
@@ -74,17 +74,17 @@ async def fetch_pexels(keyword: str, quantity: int, filters: dict, client: httpx
             for video in data.get("videos", []):
                 width = video.get("width", 0)
                 height = video.get("height", 0)
-                
+
                 # Strict manual validation
                 if requested_orientation == "portrait" and width >= height:
                     continue
                 if requested_orientation == "landscape" and height >= width:
                     continue
-                    
+
                 files = video.get("video_files", [])
                 if files:
                     media_urls.append(files[0].get("link"))
-                    
+
                 if len(media_urls) >= quantity:
                     break
         else:
@@ -106,10 +106,10 @@ async def fetch_pixabay(keyword: str, quantity: int, filters: dict, client: http
 
     is_video = filters.get("image_type", "").lower() == "video"
     requested_orientation = filters.get("orientation", "").lower()
-    
+
     base_path = "/api/videos/" if is_video else "/api/"
     per_page = 15
-    
+
     url = f"https://pixabay.com{base_path}?key={settings.pixabay_api_key}&q={quote_plus(keyword)}&per_page={per_page}&page={page}"
 
     if requested_orientation and not is_video:
@@ -140,20 +140,20 @@ async def fetch_pixabay(keyword: str, quantity: int, filters: dict, client: http
             if is_video:
                 videos = hit.get("videos", {})
                 vid_data = videos.get("large", {}) or videos.get("medium", {}) or videos.get("small", {})
-                
+
                 width = vid_data.get("width", 0)
                 height = vid_data.get("height", 0)
-                
+
                 # Strict manual validation
                 if requested_orientation == "portrait" and width >= height:
                     continue
                 if requested_orientation == "landscape" and height >= width:
                     continue
-                    
+
                 vid_url = vid_data.get("url")
                 if vid_url:
                     media_urls.append(vid_url)
-                    
+
                 if len(media_urls) >= quantity:
                     break
             else:
@@ -168,25 +168,26 @@ async def fetch_pixabay(keyword: str, quantity: int, filters: dict, client: http
         return []
 
 
-async def upload_image_to_b2(url: str, user_id: str, template_id: str | None, item_id: str, client: httpx.AsyncClient) -> str | None:
+async def upload_image_to_b2(url: str, user_id: str, template_id: str | None, item_id: str, client: httpx.AsyncClient, *, authorized_app_id: int) -> str | None:
     try:
         response = await client.get(url, timeout=15)
         response.raise_for_status()
-        
+
         # Generate object key
-        filename = os.path.basename(url.split("?")[0])
+        filename = os.path.basename(url.split("?", maxsplit=1)[0])
         if not filename or "." not in filename:
             filename = f"media_{uuid.uuid4().hex[:8]}.jpg"
         else:
             name, ext = os.path.splitext(filename)
             filename = f"{name}_{uuid.uuid4().hex[:8]}{ext}"
-            
+
         # Use template_id in path to prevent cross-template contamination
+        parts = ["media", f"app-{authorized_app_id}", quote(user_id, safe="")]
         if template_id:
-            object_key = f"media/{user_id}/{template_id}/{item_id}/{filename}"
-        else:
-            object_key = f"media/{user_id}/{item_id}/{filename}"
-        
+            parts.append(quote(template_id, safe=""))
+        parts.extend([quote(item_id, safe=""), filename])
+        object_key = "/".join(parts)
+
         # Upload to B2
         session, b2_config = get_b2_session()
         async with session.client('s3', endpoint_url=settings.b2_endpoint_url, config=b2_config) as s3:
@@ -196,7 +197,7 @@ async def upload_image_to_b2(url: str, user_id: str, template_id: str | None, it
                 Body=response.content,
                 ContentType=response.headers.get("Content-Type", "image/jpeg")
             )
-            
+
         logger.info("Saved media to B2: %s", object_key)
         return object_key
     except Exception as exc:
@@ -204,7 +205,7 @@ async def upload_image_to_b2(url: str, user_id: str, template_id: str | None, it
         return None
 
 
-async def extract_and_send_media(user_id: str, item_id: str, keywords: list, filters: dict, template_id: str | None = None):
+async def extract_and_send_media(user_id: str, item_id: str, keywords: list, filters: dict, template_id: str | None = None, *, authorized_app_id: int):
     extracted_keys = []
 
     # Use a standard browser User-Agent to avoid 503/403 blocks from CDNs
@@ -216,39 +217,41 @@ async def extract_and_send_media(user_id: str, item_id: str, keywords: list, fil
         for k_obj in keywords:
             keyword = k_obj.keyword
             target_quantity = k_obj.quantity_to_download or 3
-            
+
             keyword_urls = []
-            
+
             # ATTEMPT 1 (Page 1)
             await asyncio.sleep(1.5)
             pexels_urls = await fetch_pexels(keyword, target_quantity, filters, client, page=1)
             keyword_urls.extend(pexels_urls)
-            
+
             if len(keyword_urls) < target_quantity:
                 pixabay_urls = await fetch_pixabay(keyword, target_quantity - len(keyword_urls), filters, client, page=1)
                 keyword_urls.extend(pixabay_urls)
-                
+
             # ATTEMPT 2 (Page 2) - Only if we still need more
             if len(keyword_urls) < target_quantity:
                 await asyncio.sleep(1.5)
                 pexels_urls_2 = await fetch_pexels(keyword, target_quantity - len(keyword_urls), filters, client, page=2)
                 keyword_urls.extend(pexels_urls_2)
-                
+
                 if len(keyword_urls) < target_quantity:
                     pixabay_urls_2 = await fetch_pixabay(keyword, target_quantity - len(keyword_urls), filters, client, page=2)
                     keyword_urls.extend(pixabay_urls_2)
 
             # Upload what we successfully found up to the target quantity
             for media_url in keyword_urls[:target_quantity]:
-                object_key = await upload_image_to_b2(media_url, user_id, template_id, item_id, client)
+                object_key = await upload_image_to_b2(media_url, user_id, template_id, item_id, client,
+                                                       authorized_app_id=authorized_app_id)
                 if object_key:
                     extracted_keys.append(object_key)
-        
+
     # Save to Database
     if extracted_keys:
         async with AsyncSessionLocal() as db_session:
             for key in extracted_keys:
                 media_record = ExtractedMedia(
+                    authorized_app_id=authorized_app_id,
                     user_id=user_id,
                     template_id=template_id,
                     item_id=item_id,
@@ -259,10 +262,11 @@ async def extract_and_send_media(user_id: str, item_id: str, keywords: list, fil
             logger.info("Saved %d media keys to DB for item %s", len(extracted_keys), item_id)
 
 
-async def get_media_urls_for_item(user_id: str, item_id: str, template_id: str | None = None) -> list[str]:
+async def get_media_urls_for_item(user_id: str, item_id: str, template_id: str | None = None, *, authorized_app_id: int) -> list[str]:
     """Fetch object keys from DB and generate pre-signed S3 URLs."""
     async with AsyncSessionLocal() as db_session:
         filters = [
+            ExtractedMedia.authorized_app_id == authorized_app_id,
             ExtractedMedia.user_id == user_id,
             ExtractedMedia.item_id == item_id,
         ]
@@ -272,10 +276,10 @@ async def get_media_urls_for_item(user_id: str, item_id: str, template_id: str |
             select(ExtractedMedia).where(*filters)
         )
         media_records = result.scalars().all()
-        
+
     if not media_records:
         return []
-        
+
     session, b2_config = get_b2_session()
     urls = []
     async with session.client('s3', endpoint_url=settings.b2_endpoint_url, config=b2_config) as s3:
@@ -289,52 +293,63 @@ async def get_media_urls_for_item(user_id: str, item_id: str, template_id: str |
                 urls.append(url)
             except ClientError as e:
                 logger.error("Failed to generate presigned URL for %s: %s", record.object_key, e)
-                
+
     return urls
 
-import urllib.parse
-
-async def delete_media_urls(user_id: str, urls: list[str]) -> dict:
+async def delete_media_urls(user_id: str, urls: list[str], *, authorized_app_id: int) -> dict:
     """Extracts object keys from URLs and deletes them from B2 and the Database."""
     keys_to_delete = []
     bucket_prefix = f"/{settings.b2_bucket_name}/"
-    
+
     for url in urls:
         parsed = urllib.parse.urlparse(url)
         path = parsed.path
         if path.startswith(bucket_prefix):
             object_key = urllib.parse.unquote(path[len(bucket_prefix):])
             # Security check: ensure the object key belongs to the user
-            if object_key.startswith(f"media/{user_id}/"):
+            if object_key.startswith(f"media/app-{authorized_app_id}/{quote(user_id, safe='')}/"):
                 keys_to_delete.append(object_key)
-                
+
     if not keys_to_delete:
         return {"deleted": 0, "failed": 0, "message": "No valid URLs found for this user."}
 
+    # URL paths are untrusted: only persisted records in this app may reach storage.
+    async with AsyncSessionLocal() as db_session:
+        owned = (await db_session.execute(select(ExtractedMedia.object_key).where(
+            ExtractedMedia.authorized_app_id == authorized_app_id,
+            ExtractedMedia.user_id == user_id,
+            ExtractedMedia.object_key.in_(keys_to_delete),
+        ))).scalars().all()
+    keys_to_delete = sorted(set(owned))
+    if not keys_to_delete:
+        return {"deleted": 0, "failed": 0, "message": "No owned media found"}
     session, b2_config = get_b2_session()
     deleted_count = 0
     failed_count = 0
-    
+    deleted_keys = []
+
     async with session.client('s3', endpoint_url=settings.b2_endpoint_url, config=b2_config) as s3:
         for key in keys_to_delete:
             try:
                 await s3.delete_object(Bucket=settings.b2_bucket_name, Key=key)
                 deleted_count += 1
+                deleted_keys.append(key)
             except Exception as e:
                 logger.error("Failed to delete %s from B2: %s", key, e)
                 failed_count += 1
-                
+
     # Delete from DB if any were deleted
-    if keys_to_delete:
+    if deleted_keys:
         async with AsyncSessionLocal() as db_session:
             await db_session.execute(
                 delete(ExtractedMedia).where(
+                    ExtractedMedia.authorized_app_id == authorized_app_id,
                     ExtractedMedia.user_id == user_id,
-                    ExtractedMedia.object_key.in_(keys_to_delete)
+                    ExtractedMedia.object_key.in_(deleted_keys)
                 )
             )
             await db_session.commit()
-            
+
     return {"deleted": deleted_count, "failed": failed_count}
 
 

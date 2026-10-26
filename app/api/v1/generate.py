@@ -20,6 +20,7 @@ from app.core.middleware import limiter
 from app.db.database import get_db
 from app.models.db_models import AccessAPIKey, FinalResponse, Query
 from app.services.generation import GenerationError, GenerationTrace, generate_text
+from app.services.generation_telemetry import request_identity
 from app.services.query_telemetry import cost_summary, provider_calls
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ class GenerateRequest(BaseModel):
 
 class GenerateResponse(BaseModel):
     answer: str = Field(min_length=1)
+    title: str | None = Field(default=None, max_length=80)
     request_id: str
     finish_reason: Literal["stop", "unknown"]
 
@@ -151,6 +153,7 @@ async def generate_endpoint(
         raw_query=req.prompt, input_type="text", authorized_app_id=api_key.authorized_app_id
     )
     row.meta = {
+        **request_identity(request, api_key.authorized_app_id),
         "request_id": request.state.request_id,
         "api_key_id": api_key.id,
         "request_type": "generate",
@@ -201,6 +204,7 @@ async def generate_endpoint(
                         "request_type": "generate",
                         "status": status,
                         "finish_reason": trace.finish_reason,
+                        "title": trace.title if status == "completed" else None,
                         "cache_hit": False,
                         "requires_search": False,
                         "model_attempts": trace.attempts,
@@ -244,5 +248,8 @@ async def generate_endpoint(
                         503, "record_persistence_failed", "Generation result could not be saved"
                     ) from None
     return GenerateResponse(
-        answer=answer, request_id=request.state.request_id, finish_reason=finish_reason
+        answer=answer,
+        title=trace.title,
+        request_id=request.state.request_id,
+        finish_reason=finish_reason,
     )

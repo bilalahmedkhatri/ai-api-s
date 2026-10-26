@@ -4,15 +4,16 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.db_models import TTSModel, TTSVoice
+from app.services.model_endpoints import legacy_views
 from app.services.tts.availability import is_local_kokoro
 
 
 async def get_dynamic_tts_models(db: AsyncSession) -> list[dict]:
     """Fetch all active TTS models from the database."""
-    result = await db.execute(select(TTSModel).where(TTSModel.is_active.is_(True)))
+    result = await db.execute(select(TTSModel))
     return [
         {"name": m.name, "provider": m.provider, "is_local": m.is_local}
-        for m in result.scalars().all() if not is_local_kokoro(m.provider, m.is_local)
+        for m in await legacy_views(db, result.scalars().all(), "tts") if not is_local_kokoro(m.provider, m.is_local)
     ]
 
 
@@ -25,9 +26,11 @@ async def get_dynamic_voices(
 ) -> tuple[list[dict], int]:
     """Fetch paginated and searchable voices associated with a specific TTS model."""
     model_result = await db.execute(
-        select(TTSModel).where(TTSModel.name == model_name, TTSModel.is_active.is_(True))
+        select(TTSModel).where(TTSModel.name == model_name)
     )
     model = model_result.scalar_one_or_none()
+    models = await legacy_views(db, [model] if model else [], "tts")
+    model = models[0] if models else None
     if not model or is_local_kokoro(model.provider, model.is_local):
         raise ValueError(f"Model {model_name} not found or inactive.")
 

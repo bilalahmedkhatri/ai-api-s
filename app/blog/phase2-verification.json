@@ -1,0 +1,55 @@
+{
+  "phase": 2,
+  "verified_at": "2026-10-23T23:52:37.111309+05:00",
+  "apps": [
+    {
+      "status": "verified",
+      "app": "azeemlab",
+      "revision": "blog_0001",
+      "rows": {
+        "blog_assets": 0,
+        "blog_categories": 0,
+        "blog_posts": 0
+      }
+    },
+    {
+      "status": "verified",
+      "app": "ailettergen",
+      "revision": "blog_0001",
+      "rows": {
+        "blog_assets": 0,
+        "blog_categories": 0,
+        "blog_posts": 0
+      }
+    },
+    {
+      "status": "verified",
+      "app": "bondsgame",
+      "revision": "blog_0001",
+      "rows": {
+        "blog_assets": 0,
+        "blog_categories": 0,
+        "blog_posts": 0
+      }
+    },
+    {
+      "status": "verified",
+      "app": "genzee_video",
+      "revision": "blog_0001",
+      "rows": {
+        "blog_assets": 0,
+        "blog_categories": 0,
+        "blog_posts": 0
+      }
+    }
+  ],
+  "central": {
+    "revision": "b1023c5d7e90",
+    "designation": "nullable VARCHAR(160)",
+    "profiles_with_designation": 0
+  },
+  "unconfigured": [
+    "sikanderart",
+    "e_sahulat"
+  ]
+}

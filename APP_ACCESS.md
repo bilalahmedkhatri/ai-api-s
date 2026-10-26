@@ -1,6 +1,20 @@
 # FastAPI app access aur Facebook ownership
 
-## Customer API keys (2026-10-15)
+## Backend user access finalization (2026-10-21)
+
+The current backend contract is documented in [docs/USER_ACCESS.md](docs/USER_ACCESS.md).
+Master-key activation is retired. Approved verified users receive a dedicated
+project; dashboard execution uses server-only bound credentials. External keys
+inherit the same explicit user CRUD policy as dashboard actions. All apps owned
+by a member inherit live membership restrictions. Revocation invalidates existing
+keys permanently, including keys of legacy owned apps. Extracted media now has
+app-level ownership; unassigned legacy media remains inaccessible.
+
+Run the read-only impact report before applying migration `f820b1c943ae` and
+deploying the corresponding backend. No existing grants or ownership are guessed.
+The dated customer flow and deployment evidence below are historical.
+
+## Historical customer API keys (2026-10-15)
 
 Current customer flow: existing registration/login/approval -> administrator-visible
 encrypted membership master key -> dedicated API Keys page -> master key required

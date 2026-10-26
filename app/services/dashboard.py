@@ -13,12 +13,13 @@ from cryptography.fernet import Fernet
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy import select
 
+from app.blog.config import APP_KEYS as BLOG_APP_KEYS
 from app.core.config import settings
 from app.db.database import get_db
 from app.models.dashboard import AuditLog, DashboardSession, EmailChallenge, Membership, Permission
 from app.models.db_models import User
 
-PAGES = ["overview", "endpoints", "activity", "users", "settings"]
+PAGES = ["overview", "endpoints", "activity", "users", "settings", "blog-editor"]
 COMPONENTS = [
     "endpoint.execute",
     "endpoint.create",
@@ -26,7 +27,10 @@ COMPONENTS = [
     "endpoint.delete",
     "credentials.manage",
     "members.manage",
-]
+    "blog.create",
+    "blog.update",
+    "blog.publish",
+] + [f"blog.app.{key}" for key in BLOG_APP_KEYS]
 
 
 def now():
@@ -56,9 +60,9 @@ def cipher():
     return Fernet(settings.encryption_key.encode())
 
 
-def redact(value):
+def redact(value, sensitive_values=()):
     if isinstance(value, list):
-        return [redact(v) for v in value]
+        return [redact(v, sensitive_values) for v in value]
     if isinstance(value, dict):
         return {
             k: "[redacted]"
@@ -77,9 +81,13 @@ def redact(value):
                     "api_key",
                 )
             )
-            else redact(v)
+            else redact(v, sensitive_values)
             for k, v in value.items()
         }
+    if isinstance(value, str):
+        for secret in sensitive_values:
+            if secret:
+                value = value.replace(secret, "[redacted]")
     return value
 
 
@@ -157,12 +165,15 @@ async def dto(db, m):
     return {
         "id": m.id,
         "name": m.name or m.email,
+        "designation": m.designation,
         "email": m.email,
         "role": m.role,
         "approved": int(m.status == "approved"),
         "active": int(m.status != "revoked"),
         "status": m.status,
         "created_at": m.created_at.isoformat(),
+        "access_expires_at": m.access_expires_at,
+        "permission_version": m.permission_version,
         "grants": json.dumps(values("endpoint")),
         "page_permissions": json.dumps(values("page")),
         "sections": values("section"),
@@ -177,7 +188,8 @@ async def dto(db, m):
 
 async def establish(db, identity):
     email = identity["email"].lower()
-    m = (await db.execute(select(Membership).where(Membership.email == email))).scalar_one_or_none()
+    m = (await db.execute(select(Membership).where(Membership.email == email)
+                          .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
     if (
         not m
         or m.status != "approved"
@@ -195,12 +207,15 @@ async def establish(db, identity):
         ).scalar_one_or_none()
         if existing_email:
             raise HTTPException(403, "Existing gateway account uses another Google identity")
-        user = User(google_id=identity["sub"], email=email, name=identity.get("name"))
+        user = User(google_id=identity["sub"], email=email, name=identity.get("name"), api_access_enabled=True)
         db.add(user)
         await db.flush()
     if not user.is_active:
         raise HTTPException(403, "Gateway account is deactivated")
     m.user_id = user.id
+    if user.api_access_enabled:
+        from app.services.customer_keys import ensure_project
+        await ensure_project(db, m)
     user.last_login_at = now()
     token = secrets.token_urlsafe(48)
     db.add(

@@ -1,8 +1,10 @@
 """app/api/v1/video/router.py — Video generation endpoints."""
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 
+from anyio import CancelScope
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,6 +12,7 @@ from app.api.v1.video.schemas import VideoGenerateRequest, VideoGenerateResponse
 from app.core.middleware import limiter
 from app.db.database import get_db
 from app.models.db_models import MediaGeneration
+from app.services.generation_telemetry import finalize_media, media_metadata, media_telemetry
 from app.services.media_gen_service import generate_media, get_media_models
 
 logger = logging.getLogger(__name__)
@@ -61,7 +64,7 @@ async def generate_video_endpoint(
         height=body.height or model.default_height,
         duration_s=body.duration_s,
         num_outputs=min(body.num_outputs, model.max_outputs),
-        extra_params_json=extra_params,
+        extra_params_json=media_metadata(request, request.state.authorized_app.id, model, extra_params),
         status="pending",
     )
     db.add(audit)
@@ -71,41 +74,46 @@ async def generate_video_endpoint(
     start_time = datetime.now(UTC)
     try:
         # Generate!
-        urls, media_type = await generate_media(
-            db=db,
-            model_name=body.model,
-            prompt=body.prompt,
-            negative_prompt=body.negative_prompt,
-            width=body.width,
-            height=body.height,
-            duration_s=body.duration_s,
-            num_outputs=body.num_outputs,
-            extra_params=extra_params,
-        )
+        with media_telemetry(audit.id):
+            urls, media_type = await generate_media(
+                db=db, model_snapshot=model,
+                model_name=body.model,
+                prompt=body.prompt,
+                negative_prompt=body.negative_prompt,
+                width=body.width,
+                height=body.height,
+                duration_s=body.duration_s,
+                num_outputs=body.num_outputs,
+                extra_params=extra_params,
+            )
 
         # Update audit on success
         import json
         audit.result_urls = json.dumps(urls)
         audit.status = "success"
 
+    except asyncio.CancelledError:
+        audit.status = "cancelled"
+        audit.error_message = "CancelledError"
+        raise
+
     except TimeoutError as e:
         audit.status = "timeout"
-        audit.error_message = str(e)
-        logger.error(f"Video generation timeout: {e}")
-        await db.commit()
+        audit.error_message = type(e).__name__
+        logger.warning("Video generation timeout")
         raise HTTPException(status_code=504, detail="Generation timed out.") from e
 
     except Exception as e:
         audit.status = "failed"
-        audit.error_message = str(e)
-        logger.error("Video generation failed", exc_info=True)
-        await db.commit()
-        raise HTTPException(status_code=500, detail=f"Generation failed: {e}") from e
+        audit.error_message = type(e).__name__
+        logger.warning("Video generation failed error_type=%s", type(e).__name__)
+        raise HTTPException(status_code=500, detail="Generation failed. Please retry later.") from e
 
     finally:
         elapsed = (datetime.now(UTC) - start_time).total_seconds() * 1000
         audit.elapsed_ms = elapsed
-        await db.commit()
+        with CancelScope(shield=True):
+            await finalize_media(db, audit)
 
     return VideoGenerateResponse(
         model=body.model,

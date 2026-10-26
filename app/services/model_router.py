@@ -8,8 +8,9 @@ import litellm
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.db_models import AIModel
+from app.models.db_models import AIModel, ModelEndpoint
 from app.services.key_manager import get_next_available_key, mark_key_quota_exceeded, mark_key_used
+from app.services.model_endpoints import chat_options
 from app.services.query_telemetry import record_call
 
 logger = logging.getLogger(__name__)
@@ -44,7 +45,10 @@ def _model_name(model):
 
 async def _pick_models(db, preferred):
     rows = (await db.execute(select(AIModel).where(
-        AIModel.is_active.is_(True), AIModel.provider != "openrouter"
+        AIModel.is_active.is_(True), AIModel.provider != "openrouter",
+        (~AIModel.endpoints.any()) | AIModel.endpoints.any(
+            (ModelEndpoint.model_type == "chat") & ModelEndpoint.is_active.is_(True)
+            & (ModelEndpoint.adapter == "litellm")),
     ))).scalars().all()
     compatible = []
     for model in rows:
@@ -96,16 +100,17 @@ async def call_llm(
         attempt_start = time.monotonic()
         response = None
         try:
+            options = await chat_options(db, model)
             response = await litellm.acompletion(
                 model=name, api_key=secret,
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=max_tokens, timeout=LLM_TIMEOUT, num_retries=0,
+                max_tokens=max_tokens, timeout=LLM_TIMEOUT, num_retries=0, **options,
             )
             answer = (response.choices[0].message.content or "").strip()
             if not answer:
                 raise ValueError("Empty provider answer")
         except Exception as exc:
-            telemetry = record_call("chat", name, attempt_start, response=response, error=exc)
+            telemetry = record_call("chat", name, attempt_start, response=response, error=exc, provider=model.provider)
             attempt.update({key: telemetry[key] for key in ("prompt_tokens", "completion_tokens", "cost_usd")})
             attempt.update(status="failed", error_type=type(exc).__name__,
                            status_code=getattr(exc, "status_code", None),
@@ -115,7 +120,7 @@ async def call_llm(
             if getattr(exc, "status_code", None) == 429:
                 await mark_key_quota_exceeded(db, key_id)
             continue
-        telemetry = record_call("chat", name, attempt_start, response=response)
+        telemetry = record_call("chat", name, attempt_start, response=response, provider=model.provider)
         prompt_tokens, completion_tokens, cost = (telemetry[k] for k in ("prompt_tokens", "completion_tokens", "cost_usd"))
         actual_model = getattr(response, "model", None) or name
         attempt.update(status="completed", actual_model=actual_model,

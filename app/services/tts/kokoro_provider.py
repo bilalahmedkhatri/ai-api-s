@@ -4,6 +4,8 @@ import asyncio
 import logging
 import os
 
+from app.services.generation_telemetry import begin_attempt, observe_http, provider_attempt
+
 logger = logging.getLogger(__name__)
 _kokoro_instances: dict = {}  # Import compatibility only; no local model is cached.
 
@@ -59,13 +61,14 @@ async def _generate_kokoro_live(
     model_name: str = "kokoro-v1.0-live",
     config: dict | None = None,
     url: str | None = None,
+    api_key: str | None = None,
 ) -> tuple[bytes, str]:
     """Kokoro via Replicate; local fallback requires explicit DB configuration."""
     import httpx
 
     config = config or {}
     replicate_token = (
-        os.environ.get("REPLICATE_API_TOKEN")
+        api_key or os.environ.get("REPLICATE_API_TOKEN")
         or os.environ.get("REPLICATE_API_KEY")
         or config.get("api_key")
     )
@@ -80,8 +83,11 @@ async def _generate_kokoro_live(
             endpoint = url or "https://api.replicate.com/v1/models/hexgrad/kokoro-tts/predictions"
             payload = {"input": {"text": text, "voice": voice, "speed": speed}}
 
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with provider_attempt("tts"), httpx.AsyncClient(timeout=60.0) as client:
+                await begin_attempt()
                 res = await client.post(endpoint, json=payload, headers=headers)
+                observe_http(res)
+                res.raise_for_status()
                 if res.status_code in (200, 201):
                     data = res.json()
                     output = data.get("output")
@@ -90,7 +96,10 @@ async def _generate_kokoro_live(
                         poll_url = data.get("urls", {}).get("get")
                         for _ in range(30 if poll_url else 0):
                             await asyncio.sleep(1.0)
-                            poll_data = (await client.get(poll_url, headers=headers)).json()
+                            poll_response = await client.get(poll_url, headers=headers)
+                            observe_http(poll_response)
+                            poll_response.raise_for_status()
+                            poll_data = poll_response.json()
                             if poll_data.get("status") == "succeeded":
                                 output = poll_data.get("output")
                                 break
@@ -110,6 +119,7 @@ async def _generate_kokoro_live(
                             return audio_res.content, "audio/wav"
                 else:
                     logger.warning("Replicate returned HTTP %s.", res.status_code)
+                raise RuntimeError("Remote Kokoro did not return downloadable audio")
         except Exception as e:
             logger.warning(
                 "Replicate Kokoro live generation failed (%s).",

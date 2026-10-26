@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import AsyncSessionLocal
 from app.models.db_models import TTSModel
+from app.services.key_manager import get_next_available_key, mark_key_used
+from app.services.model_endpoints import legacy_views
 from app.services.tts.availability import LOCAL_KOKORO_UNAVAILABLE, is_local_kokoro
 from app.services.tts.gemini_provider import _generate_gemini_speech
 from app.services.tts.kokoro_provider import (
@@ -31,16 +33,19 @@ class _ModelInfo:
     default_voice: str | None
     default_speed: float | None
     default_lang: str | None
+    model_endpoint_id: int | None = None
 
 
 async def _load_model(model_name: str, provider: str | None) -> _ModelInfo | None:
-    stmt = select(TTSModel).where(TTSModel.name == model_name, TTSModel.is_active.is_(True))
+    stmt = select(TTSModel).where(TTSModel.name == model_name)
     if provider:
         stmt = stmt.where(TTSModel.provider.ilike(provider.strip()))
 
     # Always a short-lived session: closed BEFORE the long TTS call starts.
     async with AsyncSessionLocal() as session:
         m = (await session.execute(stmt)).scalar_one_or_none()
+        models = await legacy_views(session, [m] if m else [], "tts")
+        m = models[0] if models else None
         if not m:
             return None
         return _ModelInfo(
@@ -52,6 +57,7 @@ async def _load_model(model_name: str, provider: str | None) -> _ModelInfo | Non
             default_voice=getattr(m, "default_voice", None),
             default_speed=getattr(m, "default_speed", None),
             default_lang=getattr(m, "default_lang", None),
+            model_endpoint_id=getattr(m, "model_endpoint_id", None),
         )
 
 
@@ -105,10 +111,21 @@ async def generate_dynamic_speech(
         target_speed = speed or extra.get("speed") or model.default_speed or 1.0
         target_lang = _resolve_kokoro_lang(target_voice, lang or extra.get("lang"), model.default_lang)
 
+        key = None
+        if getattr(model, "model_endpoint_id", None):
+            async with AsyncSessionLocal() as session:
+                key = await get_next_available_key(session, model.provider, reserve=True)
         wav_bytes, mime = await _generate_kokoro_live(
             text=text, voice=target_voice, speed=target_speed, lang=target_lang,
             model_name=model_name, config=model.provider_config, url=model.api_endpoint_url,
+            **({"api_key": key[1]} if key else {}),
         )
+        if key:
+            try:
+                async with AsyncSessionLocal() as session:
+                    await mark_key_used(session, key[0], reserved=True)
+            except Exception as exc:
+                logger.warning("TTS key bookkeeping deferred error_type=%s", type(exc).__name__)
     else:
         raise ValueError(f"Unsupported provider: {provider_name}")
 

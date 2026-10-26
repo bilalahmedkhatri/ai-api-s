@@ -1,0 +1,49 @@
+{
+  "run_id": "20261024T060944Z-6844db",
+  "started_at": "2026-10-24T06:09:44.988032+00:00",
+  "scope": "configured local checkout and configured databases/B2; not deployment",
+  "apps": {
+    "genzee_video": {
+      "post_ids": [
+        1
+      ],
+      "asset_ids": [
+        1
+      ],
+      "status": "passed",
+      "before": {
+        "blog_posts": 0,
+        "blog_categories": 0,
+        "blog_assets": 0
+      }
+    }
+  },
+  "checks": {
+    "missing_session_denied": true,
+    "foreign_origin_denied": true,
+    "genzee_video_audio/wav_upload": true,
+    "genzee_video_audio/wav_object_scope": true,
+    "genzee_video_audio/wav_public_bytes": true,
+    "genzee_video_audio/wav_retry": true,
+    "genzee_video_author_snapshot": true,
+    "genzee_video_draft_metadata": true,
+    "genzee_video_roundtrip": true,
+    "genzee_video_actual_list_contract": true,
+    "genzee_video_category_roundtrip": true,
+    "genzee_video_postgres_concurrent_version": true
+  },
+  "session_revoked": true,
+  "published_test_posts": false,
+  "session_id": 24,
+  "author_membership_id": 1,
+  "status": "passed",
+  "archive_results": [
+    {
+      "app": "genzee_video",
+      "id": 1,
+      "archived": true
+    }
+  ],
+  "finished_at": "2026-10-24T06:31:44.676433+00:00",
+  "previous_harness_error": null
+}

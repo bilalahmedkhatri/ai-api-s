@@ -141,11 +141,11 @@ async def search(query: str, engine: str = "auto", max_results: int = 5) -> Unif
             else:
                 result = await search_duckduckgo(query, max_results)
         except Exception as exc:
-            record_call("search", eng, started, error=exc)
+            record_call("search", eng, started, error=exc, provider=eng)
             logger.warning("Engine %s failed error_type=%s", eng, type(exc).__name__)
             last_exc = exc
         else:
-            record_call("search", eng, started, configured_cost=getattr(settings, f"{eng}_search_cost_usd", None))
+            record_call("search", eng, started, provider=eng, configured_cost=getattr(settings, f"{eng}_search_cost_usd", None))
             return result
 
     raise RuntimeError("All search engines failed") from last_exc
