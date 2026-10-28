@@ -4,6 +4,15 @@ Blog targets are independent of gateway `authorized_apps`. The admin editor sele
 a stable blog app key. Existing dashboard memberships/permissions control access;
 gateway API registrations are not the list of blogs.
 
+Post lists and counts use the authenticated membership. Non-admins can list, open
+and edit only their own posts; admins retain all-post access. New posts record a
+server-owned `metadata_json.created_by_membership_id`, preserved through updates.
+Legacy ownership uses only successful, unambiguous `BLOG_POST_CREATE` audit targets
+for the exact app/post ID; unassigned posts remain admin-only. The existing list
+response includes unfiltered `counts.mine` and `counts.total` alongside the scoped,
+filtered pagination total. No schema migration is needed; deploy backend and admin
+together so the new list response contract is available.
+
 ## Media ownership and gallery update (2026-10-25)
 
 Current app schema is `blog_0002`, adding nullable authenticated uploader attribution and an index. The upload popup now includes a paginated My images gallery, and the backend always scopes the list/count and upload-token reuse to the current membership. Existing unassigned assets stay unassigned and hidden from the gallery. See [MEDIA_OWNERSHIP.md](MEDIA_OWNERSHIP.md) for migration, validation and manual acceptance details. Earlier phase sections below are historical.
@@ -534,8 +543,17 @@ Never migrate at startup or on requests. PostgreSQL appends the physical column;
 placing it after designation would require a table rebuild.
 
 New posts snapshot the verified membership description using the existing
-2,000-character plain-text validator. Saves preserve that author snapshot,
-including when another editor updates a post. Metadata also exposes
-`author_description` for the existing consumer reader. Legacy posts remain NULL;
-no biography is inferred or backfilled. Deploy/restart the backend after applying
-the migration; this change does not deploy it.
+2,000-character plain-text validator. On an explicit post Save, author name,
+designation, avatar and description refresh from the original creator's current
+profile, even when an administrator edits the post. Creator identity comes from
+server-owned `metadata_json.created_by_membership_id`, or for legacy posts from
+one unambiguous successful creation audit with the exact app/post target.
+Missing, deleted or ambiguous creator identities preserve the saved author;
+the current editor is never used as a substitute. Profile edits alone do not
+rewrite existing articles. Metadata also exposes `author_description`.
+
+The AzeemLab reader selects `author_description` directly, with a legacy metadata
+fallback, and no longer substitutes a static team biography by matching names.
+After deploying/restarting the backend and consumer, open each affected article
+and Save changes once to refresh its author details. No automatic bulk backfill
+or new migration is part of this correction; existing `blog_0003` is required.

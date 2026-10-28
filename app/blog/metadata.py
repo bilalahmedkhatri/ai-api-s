@@ -48,7 +48,9 @@ def build_metadata(target, post, cover_url=None):
         if cover_url:
             json_ld["image"] = cover_url
     cover_details = (post.get("metadata_json") or {}).get("cover_image") if cover_url else None
+    creator = (post.get("metadata_json") or {}).get("created_by_membership_id")
     return {
+        **({"created_by_membership_id": creator} if type(creator) is int and creator > 0 else {}),
         **({"cover_image": {**cover_details, "url": cover_url}} if cover_details else {}),
         "schema_version": 1,
         "title": title,

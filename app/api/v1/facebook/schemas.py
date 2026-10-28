@@ -23,3 +23,8 @@ class TokenStoreRequest(BaseModel):
 class TokenStoreResponse(BaseModel):
     status: str
     message: str
+
+class PostChangeRequest(BaseModel):
+    page_id: str
+    message: str | None = None
+    scheduled_publish_time: int | None = None

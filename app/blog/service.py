@@ -26,6 +26,7 @@ from app.blog.profile import description_text
 from app.blog.schema import blog_assets as assets
 from app.blog.schema import blog_categories as categories
 from app.blog.schema import blog_posts as posts
+from app.models.dashboard import AuditLog, Membership
 from app.models.db_models import User
 from app.services.dashboard import audit
 
@@ -36,18 +37,57 @@ def utcnow():
     return datetime.now(UTC)
 
 
-async def find_post(db, identifier):
-    row = (
-        (await db.execute(sa.select(posts).where(posts.c.id == identifier)))
-        .mappings()
-        .one_or_none()
+async def owned_posts(central, app_key, membership_id):
+    # Legacy ownership comes only from an unambiguous successful creation audit.
+    prefix = f"{app_key}:post:"
+    targets = (
+        (
+            await central.execute(
+                sa.select(AuditLog.target)
+                .where(
+                    AuditLog.action == "BLOG_POST_CREATE",
+                    AuditLog.status.between(200, 299),
+                    AuditLog.actor_membership_id.is_not(None),
+                    AuditLog.target.startswith(prefix, autoescape=True),
+                )
+                .group_by(AuditLog.target)
+                .having(
+                    sa.func.count(sa.distinct(AuditLog.actor_membership_id)) == 1,
+                    sa.func.min(AuditLog.actor_membership_id) == membership_id,
+                )
+            )
+        )
+        .scalars()
+        .all()
     )
+    ids = [
+        int(value)
+        for target in targets
+        if (value := target[len(prefix) :]).isascii()
+        and value.isdecimal()
+        and 0 < int(value) <= 2147483647
+        and str(int(value)) == value
+    ]
+    owner = posts.c.metadata_json["created_by_membership_id"].as_string()
+    return sa.or_(
+        sa.cast(owner, sa.String) == str(membership_id),
+        sa.and_(owner.is_(None), posts.c.id.in_(ids)),
+    )
+
+
+async def find_post(db, identifier, ownership=None):
+    statement = sa.select(posts).where(posts.c.id == identifier)
+    if ownership is not None:
+        statement = statement.where(ownership)
+    row = (await db.execute(statement)).mappings().one_or_none()
     if row is None:
         raise HTTPException(404, "Blog post not found.")
     return dict(row)
 
 
-async def list_posts(db, *, page=1, page_size=20, status=None, locale=None, search=None):
+async def list_posts(
+    db, *, page=1, page_size=20, status=None, locale=None, search=None, ownership=None, admin=True
+):
     conditions = []
     if status:
         conditions.append(posts.c.status == status)
@@ -60,9 +100,22 @@ async def list_posts(db, *, page=1, page_size=20, status=None, locale=None, sear
                 posts.c.slug.icontains(search, autoescape=True),
             )
         )
-    total = (
-        await db.execute(sa.select(sa.func.count()).select_from(posts).where(*conditions))
-    ).scalar_one()
+    mine = ownership if ownership is not None else sa.false()
+    visible = sa.true() if admin else mine
+    conditions.append(visible)
+    counts = (
+        (
+            await db.execute(
+                sa.select(
+                    sa.func.count().filter(sa.and_(*conditions)).label("filtered"),
+                    sa.func.count().filter(mine).label("mine"),
+                    sa.func.count().label("total"),
+                ).select_from(posts)
+            )
+        )
+        .mappings()
+        .one()
+    )
     statement = (
         sa.select(*(column for column in posts.c if column.name != "content_json"))
         .where(*conditions)
@@ -71,7 +124,14 @@ async def list_posts(db, *, page=1, page_size=20, status=None, locale=None, sear
         .limit(page_size)
     )
     items = [dict(row) for row in (await db.execute(statement)).mappings().all()]
-    return {"items": items, "total": total, "page": page, "page_size": page_size}
+    return {
+        "items": items,
+        "total": counts["filtered"],
+        "page": page,
+        "page_size": page_size,
+        "scope": "all" if admin else "own",
+        "counts": {"mine": counts["mine"], "total": counts["total"]},
+    }
 
 
 async def list_categories(db, *, search=None, page=1, page_size=50):
@@ -265,6 +325,37 @@ async def author_snapshot(central, membership):
     return snapshot
 
 
+async def original_author_snapshot(central, app_key, existing):
+    """Refresh only the verified creator; an editor never becomes the author."""
+    metadata = existing.get("metadata_json") or {}
+    identifier = metadata.get("created_by_membership_id")
+    if identifier is None:
+        # Legacy records can use only an exact, unambiguous successful creation audit.
+        identifiers = (
+            (
+                await central.execute(
+                    sa.select(AuditLog.actor_membership_id)
+                    .distinct()
+                    .where(
+                        AuditLog.action == "BLOG_POST_CREATE",
+                        AuditLog.target == f"{app_key}:post:{existing['id']}",
+                        AuditLog.status.between(200, 299),
+                        AuditLog.actor_membership_id.is_not(None),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        identifier = identifiers[0] if len(identifiers) == 1 else None
+    if type(identifier) is not int or identifier <= 0:
+        return None
+    creator = await central.get(Membership, identifier)
+    if creator is None:
+        return None
+    return await author_snapshot(central, creator)
+
+
 def finalize(target, values, cover_url):
     if values["status"] == "published":
         if (
@@ -289,7 +380,7 @@ def finalize(target, values, cover_url):
     return values
 
 
-async def create_post(db, target, body, snapshot):
+async def create_post(db, target, body, snapshot, *, creator_membership_id=None):
     values = body.model_dump(exclude_unset=True)
     cover_details = values.pop("cover_image", None)
     name = values.pop("category_name", None)
@@ -301,6 +392,8 @@ async def create_post(db, target, body, snapshot):
     )
     values.setdefault("cover_asset_id", None)
     apply_cover_details(values, cover_details)
+    if creator_membership_id is not None:
+        values["metadata_json"]["created_by_membership_id"] = creator_membership_id
     values["content_json"], cover_url = await bind_assets(
         db, values["content_json"], values["cover_asset_id"]
     )
@@ -333,7 +426,7 @@ async def create_post(db, target, body, snapshot):
     raise HTTPException(409, "Post slug could not be allocated. Retry the operation.")
 
 
-async def update_post(db, target, identifier, body, existing):
+async def update_post(db, target, identifier, body, existing, *, author=None):
     if existing["version"] != body.version:
         raise HTTPException(409, "This post changed. Reload it before saving.")
     changes = body.model_dump(exclude_unset=True, exclude={"version"})
@@ -346,6 +439,8 @@ async def update_post(db, target, identifier, body, existing):
     ):
         raise HTTPException(409, "A previously published post's locale cannot be changed.")
     values = {**existing, **changes}
+    if author is not None:
+        values.update(author)
     apply_cover_details(values, cover_details)
     if name is not None or "category_id" in changes:
         values["category_id"] = await category_id(db, {**changes, "category_name": name})

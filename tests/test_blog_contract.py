@@ -40,7 +40,9 @@ async def test_editor_actual_backend_contract(dashboard, storage):
         posts = (await client.get(base + "/posts")).json()
         categories = (await client.get(base + "/categories")).json()
         assets = (await client.get(base + "/assets")).json()
-        assert set(posts) == {"items", "total", "page", "page_size"}
+        assert set(posts) == {"items", "total", "page", "page_size", "scope", "counts"}
+        assert posts["counts"] == {"mine": 1, "total": 1}
+        assert posts["scope"] == "all"
         assert set(categories) == {"items", "total", "page", "page_size"}
         assert posts["items"][0]["id"] == saved.json()["post"]["id"]
         assert categories["items"][0]["id"] == saved.json()["post"]["category_id"]

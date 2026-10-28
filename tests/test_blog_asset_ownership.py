@@ -7,13 +7,41 @@ from datetime import timedelta
 import pytest
 import sqlalchemy as sa
 from app.blog.schema import blog_assets
-from app.models.dashboard import DashboardSession, Membership
+from app.models.dashboard import DashboardSession, Membership, Permission
 from app.models.db_models import User
 from app.services.dashboard import digest, now
 from httpx import ASGITransport, AsyncClient
 from main import app
 
 from tests.test_blog_media import BASE, b2, dashboard, send, storage  # noqa: F401
+
+
+@pytest.mark.asyncio
+async def test_operator_can_upload_and_list_own_cover(dashboard, b2, storage):
+    db, member, headers = dashboard
+    member.role = "operator"
+    for kind, key in [
+        ("page", "blog-editor"),
+        ("component", "blog.app.azeemlab"),
+        ("component", "blog.create"),
+        ("component", "blog.update"),
+        ("component", "blog.publish"),
+    ]:
+        db.add(
+            Permission(
+                membership_id=member.id, resource_type=kind, resource_key=key, action="view"
+            )
+        )
+    await db.commit()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        uploaded = await send(client, headers)
+        assert uploaded.status_code == 201, uploaded.text
+        listing = await client.get(BASE + "?media_type=image&page_size=12", headers=headers)
+        assert listing.status_code == 200, listing.text
+        assert [asset["id"] for asset in listing.json()["assets"]] == [
+            uploaded.json()["asset"]["id"]
+        ]
+        assert b2.puts == 1
 
 
 @pytest.mark.asyncio

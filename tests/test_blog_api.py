@@ -123,7 +123,7 @@ async def test_save_publish_version_and_app_isolation(dashboard, storage):
         other = await client.get(BASE + "/apps/ailettergen/posts", headers=headers)
         assert other.json()["total"] == 0
         path = BASE + f"/apps/azeemlab/posts/{post['id']}"
-        # Changing the profile must not replace an existing post's author snapshot.
+        # Saving refreshes the original author's snapshot from their current profile.
         changed_profile = await client.patch(
             BASE + "/profile", headers=headers, json={"description": "New profile biography."}
         )
@@ -134,10 +134,10 @@ async def test_save_publish_version_and_app_isolation(dashboard, storage):
         assert published.status_code == 200, published.text
         saved = published.json()["post"]
         assert saved["version"] == 2 and saved["published_at"]
-        assert saved["author_description"] == post["author_description"]
-        assert saved["metadata_json"]["author_description"] == post["author_description"]
+        assert saved["author_description"] == "New profile biography."
+        assert saved["metadata_json"]["author_description"] == "New profile biography."
         fetched = (await client.get(path, headers=headers)).json()["post"]
-        assert fetched["author_description"] == post["author_description"]
+        assert fetched["author_description"] == "New profile biography."
         assert (
             saved["metadata_json"]["canonical_url"]
             == "https://azeemlab.test/en/blog/hello-secure-world"
@@ -384,7 +384,7 @@ async def test_direct_blog_requests_recheck_session_revocation_without_me(dashbo
 
 
 @pytest.mark.asyncio
-async def test_author_profile_uses_current_users_row_and_preserves_saved_author(dashboard, storage):
+async def test_author_profile_uses_current_users_row_and_refreshes_saved_author(dashboard, storage):
     from app.models.db_models import User
 
     db, membership, headers = dashboard
@@ -404,7 +404,8 @@ async def test_author_profile_uses_current_users_row_and_preserves_saved_author(
             headers=headers,
             json={"version": 1, "title": "Edited article"},
         )
-        assert changed.json()["post"]["author_name"] == "Current Account Name"
+        assert changed.status_code == 200, changed.text
+        assert changed.json()["post"]["author_name"] == "Updated Account Name"
         assert (await client.get(BASE + "/profile", headers=headers)).json()[
             "name"
         ] == "Updated Account Name"

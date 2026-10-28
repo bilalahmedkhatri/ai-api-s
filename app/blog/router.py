@@ -212,6 +212,7 @@ async def posts(
     status: Literal["draft", "published", "archived"] | None = None,
     locale: str | None = Query(None, max_length=35),
     search: str | None = Query(None, max_length=200),
+    scope=Depends(read_access),
     db=Depends(read_database),
 ):
     if locale is not None:
@@ -220,20 +221,38 @@ async def posts(
         except ValueError:
             raise HTTPException(422, "Invalid locale.") from None
     return await service.list_posts(
-        db, page=page, page_size=page_size, status=status, locale=locale, search=search
+        db,
+        page=page,
+        page_size=page_size,
+        status=status,
+        locale=locale,
+        search=search,
+        ownership=await service.owned_posts(scope.central, scope.key, scope.membership.id),
+        admin=scope.membership.role == "admin",
     )
 
 
 @router.get("/apps/{app_key}/posts/{identifier}")
-async def post(identifier: int = Path(gt=0, le=2147483647), db=Depends(read_database)):
-    return {"post": await service.find_post(db, identifier)}
+async def post(
+    identifier: int = Path(gt=0, le=2147483647),
+    scope=Depends(read_access),
+    db=Depends(read_database),
+):
+    ownership = (
+        None
+        if scope.membership.role == "admin"
+        else await service.owned_posts(scope.central, scope.key, scope.membership.id)
+    )
+    return {"post": await service.find_post(db, identifier, ownership)}
 
 
 @router.post("/apps/{app_key}/posts", status_code=201)
 async def create_post(body: PostCreate, scope=Depends(create_access), db=Depends(create_database)):
     await publish_permission(scope, None, body.status)
     snapshot = await service.author_snapshot(scope.central, scope.membership)
-    row = await service.create_post(db, scope.target, body, snapshot)
+    row = await service.create_post(
+        db, scope.target, body, snapshot, creator_membership_id=scope.membership.id
+    )
     await db.commit()
     recorded = await service.record_audit(
         scope.central, scope.membership, "BLOG_POST_CREATE", f"{scope.key}:post:{row['id']}"
@@ -248,9 +267,29 @@ async def update_post(
     scope=Depends(update_access),
     db=Depends(update_database),
 ):
-    existing = await service.find_post(db, identifier)
+    ownership = (
+        None
+        if scope.membership.role == "admin"
+        else await service.owned_posts(scope.central, scope.key, scope.membership.id)
+    )
+    existing = await service.find_post(db, identifier, ownership)
     await publish_permission(scope, existing["status"], body.status)
-    row = await service.update_post(db, scope.target, identifier, body, existing)
+    author = await service.original_author_snapshot(scope.central, scope.key, existing)
+    try:
+        row = await service.update_post(db, scope.target, identifier, body, existing, author=author)
+    except HTTPException as exc:
+        if exc.status_code == 409:
+            service.logger.warning(
+                "Blog update conflict app=%s post_id=%s "
+                "request_version=%s loaded_version=%s reason=%s",
+                scope.key,
+                identifier,
+                body.version,
+                existing["version"],
+                exc.detail,
+            )
+        raise
+
     await db.commit()
     recorded = await service.record_audit(
         scope.central, scope.membership, "BLOG_POST_UPDATE", f"{scope.key}:post:{identifier}"

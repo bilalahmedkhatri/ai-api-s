@@ -207,7 +207,10 @@ async def generate_tts_endpoint(
         raise HTTPException(400, "Text cannot be empty")
     app_id = _app_id(api_key)
     try:
-        job_id = str(uuid.uuid4())
+        from app.services.tts.submission import submission_identity
+        job_id, submission_fingerprint, existing = await submission_identity(db, request, req, app_id)
+        if existing:
+            return {"job_id": existing.job_id, "title": existing.title, "status": "processing", "audio_url": None}
         token = uuid.uuid4().hex
         snapshot = asdict(_ModelInfo(
             name=model_obj.name, provider=model_obj.provider, is_local=bool(model_obj.is_local),
@@ -216,7 +219,7 @@ async def generate_tts_endpoint(
             default_lang=model_obj.default_lang,
             model_endpoint_id=getattr(model_obj, "model_endpoint_id", None),
         ))
-        generation = {"model_snapshot": snapshot, "voice": req.voice or model_obj.default_voice,
+        generation = {"submission_fingerprint": submission_fingerprint, "model_snapshot": snapshot, "voice": req.voice or model_obj.default_voice,
                       "lang": req.lang, "speed": req.speed, "extra_params": req.extra_params,
                       "_telemetry": {"version": 1, "coverage_complete": True, "attempts": [],
                                      **request_identity(request, app_id)}}

@@ -555,3 +555,17 @@ class ProviderAPIKey(Base):
     )
 
 
+class Prompt(Base):
+    __tablename__ = "prompts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    category: Mapped[str] = mapped_column(String(64), nullable=False, index=True) # e.g. Audio, Video, Blog
+    content: Mapped[str] = mapped_column(Text, nullable=False) # Markdown text
+    author_name: Mapped[str] = mapped_column(String(128), nullable=False, default="Admin")
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), onupdate=func.now(), nullable=True
+    )

@@ -4,6 +4,7 @@ from enum import StrEnum
 import httpx
 from app.api.v1.facebook.schemas import (
     FacebookPostResponse,
+    PostChangeRequest,
     TokenStoreRequest,
     TokenStoreResponse,
 )
@@ -12,6 +13,7 @@ from app.core.encryption import decrypt_token, encrypt_token
 from app.db.database import get_db
 from app.models.db_models import AccessAPIKey, AuthorizedApp, FacebookPageToken
 from app.services.facebook_client import facebook_client
+from app.services.facebook_management import manage_post
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -92,6 +94,9 @@ async def post_to_page(
     button_type: ButtonType = Form(ButtonType.NONE, description="Optional CTA button type"),
     button_link: str | None = Form(None, description="URL for the CTA button (required when button_type is set)"),
     media: UploadFile | None = None,
+    destination: str = Form("facebook"),
+    post_type: str = Form("post"),
+    title: str | None = Form(None),
     db: AsyncSession = Depends(get_db),
     api_key: AccessAPIKey = Depends(get_current_api_key),
 ):
@@ -100,6 +105,14 @@ async def post_to_page(
     Accepts optional media (photo or video) as a file upload.
     Supports scheduling via Unix timestamp and optional CTA buttons.
     """
+    # Never silently publish an Instagram request as a Facebook post, or a Reel
+    # as a regular video. These capabilities require their own provider workflow.
+    if destination != "facebook" or post_type not in {"post", "photo", "video"}:
+        raise HTTPException(501, "Requested publishing option is not supported")
+    if scheduled_publish_time:
+        import time
+        if not time.time() + 600 <= scheduled_publish_time <= time.time() + 75 * 86400:
+            raise HTTPException(400, "Invalid scheduled publish time")
     # Retrieve stored token
     stmt = select(FacebookPageToken).where(
         FacebookPageToken.page_id == page_id,
@@ -199,4 +212,24 @@ async def disconnect_page(
     record.is_active = False
     await db.commit()
     return {"status": "success", "message": "Page disconnected"}
+
+
+@router.get("/capabilities")
+async def publishing_capabilities(api_key: AccessAPIKey = Depends(get_current_api_key)):
+    return {"destinations": ["facebook"], "post_types": ["post", "photo", "video"], "manage_posts": True}
+
+
+@router.delete("/posts/{post_id}")
+async def cancel_scheduled_post(post_id: str, request: PostChangeRequest,
+                                db: AsyncSession = Depends(get_db),
+                                api_key: AccessAPIKey = Depends(get_current_api_key)):
+    return await manage_post(db, api_key.authorized_app_id, request.page_id, post_id, remove=True)
+
+
+@router.patch("/posts/{post_id}")
+async def update_scheduled_post(post_id: str, request: PostChangeRequest,
+                                db: AsyncSession = Depends(get_db),
+                                api_key: AccessAPIKey = Depends(get_current_api_key)):
+    return await manage_post(db, api_key.authorized_app_id, request.page_id, post_id,
+                             message=request.message, scheduled_publish_time=request.scheduled_publish_time)
 
