@@ -14,10 +14,53 @@ from app.blog import media, probe_process
 from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 from main import app
+from PIL import Image
 
 from tests.test_blog_media import b2, dashboard, send, storage  # noqa: F401
 
 REAL_PROBE = media.probe
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "format,mime", [("PNG", "image/png"), ("JPEG", "image/jpeg"), ("WEBP", "image/webp")]
+)
+async def test_images_validate_without_system_ffprobe(tmp_path, monkeypatch, format, mime):
+    def unavailable(*args):
+        raise AssertionError("Image validation must not invoke ffprobe")
+
+    monkeypatch.setattr(probe_process, "_run", unavailable)
+    file = tmp_path / "image"
+    Image.new("RGB", (16, 12), "blue").save(file, format=format)
+    assert await REAL_PROBE(str(file), mime) == {
+        "width": 16,
+        "height": 12,
+        "duration_seconds": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_images_reject_wrong_format_truncation_and_oversized_dimensions(tmp_path):
+    file = tmp_path / "image"
+    Image.new("RGB", (16, 12), "blue").save(file, format="PNG")
+    with pytest.raises(HTTPException) as error:
+        await REAL_PROBE(str(file), "image/webp")
+    assert error.value.status_code == 422
+    file.write_bytes(file.read_bytes()[:40])
+    with pytest.raises(HTTPException) as error:
+        await REAL_PROBE(str(file), "image/png")
+    assert error.value.status_code == 422
+
+    header = struct.pack("!IIBBBBB", 8000, 8000, 8, 2, 0, 0, 0)
+    file.write_bytes(
+        png_bytes()[:16]
+        + header
+        + struct.pack("!I", zlib.crc32(b"IHDR" + header))
+        + png_bytes()[33:]
+    )
+    with pytest.raises(HTTPException) as error:
+        await REAL_PROBE(str(file), "image/png")
+    assert error.value.status_code == 422
 
 
 def png_bytes():
@@ -81,7 +124,7 @@ async def test_process_failures_are_safe_503(monkeypatch, failure):
 
     monkeypatch.setattr(probe_process, "_run", fail)
     with pytest.raises(HTTPException) as error:
-        await REAL_PROBE("unused.png", "image/png")
+        await REAL_PROBE("unused.wav", "audio/wav")
     assert error.value.status_code == 503
     assert "private" not in error.value.detail
 

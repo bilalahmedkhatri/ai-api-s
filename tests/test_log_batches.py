@@ -30,6 +30,19 @@ def test_thousand_records_rename_with_date_range_and_redact(tmp_path):
     handler.close()
 
 
+def test_handler_can_receive_records_after_runner_closes_it(tmp_path):
+    handler = _JsonlBatchHandler(tmp_path)
+    handler.handle(record('Before runner configuration'))
+    handler.close()
+    handler.handle(record('After runner configuration'))
+    handler.close()
+    handler.close()
+    lines = [line for path in (tmp_path / 'pending').glob('*.jsonl')
+             for line in path.read_text().splitlines()]
+    assert sorted(json.loads(line)['msg'] for line in lines) == [
+        'After runner configuration', 'Before runner configuration']
+
+
 @pytest.mark.parametrize('filename', ['gateway.jsonl', 'gateway-123.jsonl', 'gateway.recovering'])
 def test_restart_recovers_partial_and_malformed_records(tmp_path, filename):
     (tmp_path / filename).write_text(json.dumps({'ts': '2024-10-04T00:00:00+00:00', 'password': 'secret'}) + '\nmalformed\n')

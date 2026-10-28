@@ -12,6 +12,7 @@ from contextlib import suppress
 
 import sqlalchemy as sa
 from fastapi import HTTPException
+from PIL import Image
 
 from app.blog.content import clean_text
 from app.blog.probe_process import probe_output
@@ -55,6 +56,14 @@ def signature(data, mime):
 
 
 async def probe(path, mime):
+    if mime.startswith("image/"):
+        task = asyncio.create_task(asyncio.to_thread(probe_image, path, mime))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            with suppress(Exception):
+                await task
+            raise
     try:
         returncode, output = await probe_output(
             [
@@ -116,6 +125,23 @@ async def probe(path, mime):
                 raise ValueError()
         return {"width": width, "height": height, "duration_seconds": duration}
     except (ValueError, KeyError, TypeError):
+        raise HTTPException(422, "Invalid or unsupported media content.") from None
+
+
+def probe_image(path, mime):
+    """Validate image content without requiring a system ffprobe executable."""
+    formats = [{"image/png": "PNG", "image/jpeg": "JPEG", "image/webp": "WEBP"}[mime]]
+    try:
+        with Image.open(path, formats=formats) as image:
+            width, height = image.size
+            if not width or not height or width * height > 40_000_000:
+                raise ValueError()
+            image.verify()
+        # verify() checks structure; decoding also rejects truncated pixel data.
+        with Image.open(path, formats=formats) as image:
+            image.load()
+        return {"width": width, "height": height, "duration_seconds": None}
+    except (OSError, ValueError, SyntaxError, Image.DecompressionBombError):
         raise HTTPException(422, "Invalid or unsupported media content.") from None
 
 

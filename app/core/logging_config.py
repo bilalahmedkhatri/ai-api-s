@@ -101,6 +101,10 @@ class _JsonlBatchHandler(logging.Handler):
     def emit(self, record):
         try:
             line = self.format(record)
+            # ASGI runners can close existing handlers while configuring their
+            # own logging, even when the root logger still references us.
+            if self.stream.closed:
+                self.stream = self.active.open('a', encoding='utf-8')
             self.stream.write(line + '\n')
             self.stream.flush()
             self.lines.append(line)
@@ -124,7 +128,7 @@ class _JsonlBatchHandler(logging.Handler):
 
     def close(self):
         with self.lock:
-            if hasattr(self, 'stream'):
+            if hasattr(self, 'stream') and not self.stream.closed:
                 self._seal()
                 self.stream.close()
         super().close()
