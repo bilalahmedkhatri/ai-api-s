@@ -426,14 +426,17 @@ async def create_post(db, target, body, snapshot, *, creator_membership_id=None)
     raise HTTPException(409, "Post slug could not be allocated. Retry the operation.")
 
 
-async def update_post(db, target, identifier, body, existing, *, author=None):
+async def update_post(
+    db, target, identifier, body, existing, *, author=None, allow_locale_change=False
+):
     if existing["version"] != body.version:
         raise HTTPException(409, "This post changed. Reload it before saving.")
     changes = body.model_dump(exclude_unset=True, exclude={"version"})
     cover_details = changes.pop("cover_image", ...)
     name = changes.pop("category_name", None)
     if (
-        existing["published_at"] is not None
+        not allow_locale_change
+        and existing["published_at"] is not None
         and "locale" in changes
         and changes["locale"] != existing["locale"]
     ):
@@ -478,6 +481,10 @@ async def update_post(db, target, identifier, body, existing, *, author=None):
                 raise HTTPException(409, "This post changed. Reload it before saving.")
             return dict(row)
         except IntegrityError:
+            if stable_slug and values["locale"] != existing["locale"]:
+                raise HTTPException(
+                    409, "This slug is already used in the selected locale."
+                ) from None
             if (
                 stable_slug
                 or not (

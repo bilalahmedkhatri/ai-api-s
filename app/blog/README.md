@@ -300,8 +300,11 @@ Create body example:
 Use category_id for an existing category or category_name to resolve/create one.
 PATCH accepts changed fields plus version; an outdated version returns 409.
 category_id and cover_asset_id accept null to clear their selections. A published
-post retains its slug and locale permanently, even after it becomes a draft or
-archive. Draft title/locale changes regenerate its slug. Conflicts use bounded
+post retains its slug, even after it becomes a draft or archive. Only an authenticated
+admin may correct its locale; metadata is rebuilt using the configured public URL,
+and a conflicting slug in the destination locale returns 409. Public locale URL
+configuration is still required for publication. Existing URLs are not redirected
+automatically. Draft title/locale changes regenerate its slug. Conflicts use bounded
 unique suffix retries and database uniqueness constraints. Category creation and
 post writes share one app transaction; invalid writes roll back together.
 

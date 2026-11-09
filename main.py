@@ -21,6 +21,8 @@ from app.core.logging_config import (
 from app.core.middleware import RequestIDMiddleware, limiter
 from app.services.query_maintenance import query_maintenance_loop
 from app.services.tts.maintenance import maintenance_loop
+from app.versions.blog_v1_1.middleware import BlogV11Middleware
+from app.versions.blog_v1_1.router import router as blog_v1_1_router
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -89,6 +91,7 @@ app.add_middleware(
 )
 app.add_middleware(AppCORSMiddleware)
 app.add_middleware(RequestIDMiddleware)
+app.add_middleware(BlogV11Middleware)
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -117,6 +120,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 
 app.include_router(v1_router)
+app.include_router(blog_v1_1_router, prefix="/api/v1.1")
 
 
 # ── Shallow health (load-balancer / Docker healthcheck) ───────────────────────

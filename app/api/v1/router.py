@@ -10,6 +10,7 @@ from app.api.v1.dashboard.authorized_apps import router as authorized_apps_route
 from app.api.v1.dashboard.customer_keys import router as customer_keys_router
 from app.api.v1.dashboard.provider_models import router as provider_models_router
 from app.api.v1.dashboard.router import router as dashboard_router
+from app.api.v1.dashboard.prompts import router as prompts_router
 from app.api.v1.facebook.router import router as facebook_router
 from app.api.v1.generate import router as generate_router
 from app.api.v1.health import router as health_router
@@ -21,6 +22,8 @@ from app.api.v1.media.router import router as media_router
 from app.api.v1.query.router import router as query_router
 from app.api.v1.video.router import router as video_gen_router
 from app.blog.router import router as blog_router
+from app.games.admin_router import router as games_admin_router
+from app.games.router import router as games_router
 from app.core.auth import get_current_api_key
 
 v1_router = APIRouter(prefix="/api/v1")
@@ -29,6 +32,7 @@ v1_router.include_router(health_router)
 v1_router.include_router(cron_router)
 v1_router.include_router(keys_router)
 v1_router.include_router(apps_router)
+v1_router.include_router(prompts_router)
 app_dependencies = [Depends(get_current_api_key)]
 v1_router.include_router(audio_speech_router, dependencies=app_dependencies)
 v1_router.include_router(image_router, prefix="/ingest", dependencies=app_dependencies)
@@ -50,3 +54,5 @@ v1_router.include_router(provider_models_router)
 v1_router.include_router(authorized_apps_router)
 
 v1_router.include_router(blog_router)
+v1_router.include_router(games_router)
+v1_router.include_router(games_admin_router)

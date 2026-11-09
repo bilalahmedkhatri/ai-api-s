@@ -274,3 +274,4 @@ logs/
 Thumbs.db
 Desktop.ini
 /docs/*
+tests/

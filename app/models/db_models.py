@@ -562,7 +562,9 @@ class Prompt(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     category: Mapped[str] = mapped_column(String(64), nullable=False, index=True) # e.g. Audio, Video, Blog
     content: Mapped[str] = mapped_column(Text, nullable=False) # Markdown text
+    url_address: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     author_name: Mapped[str] = mapped_column(String(128), nullable=False, default="Admin")
+    created_by_membership_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

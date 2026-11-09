@@ -276,7 +276,15 @@ async def update_post(
     await publish_permission(scope, existing["status"], body.status)
     author = await service.original_author_snapshot(scope.central, scope.key, existing)
     try:
-        row = await service.update_post(db, scope.target, identifier, body, existing, author=author)
+        row = await service.update_post(
+            db,
+            scope.target,
+            identifier,
+            body,
+            existing,
+            author=author,
+            allow_locale_change=scope.membership.role == "admin",
+        )
     except HTTPException as exc:
         if exc.status_code == 409:
             service.logger.warning(
